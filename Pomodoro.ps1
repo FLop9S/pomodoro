@@ -48,6 +48,42 @@ public class PomoHotkey : NativeWindow {
 }
 "@
 
+# Sons gerados em memória (WAV PCM 16 bits mono): nada de arquivo extra
+Add-Type -TypeDefinition @"
+using System;
+using System.IO;
+public static class PomoSound {
+    const int Rate = 22050;
+    // Notas em trios: frequência (Hz, 0 = silêncio), duração (ms), volume (0 a 1)
+    public static byte[] Wav(params double[] notes) {
+        var pcm = new MemoryStream();
+        var w = new BinaryWriter(pcm);
+        for (int i = 0; i + 2 < notes.Length; i += 3) {
+            double f = notes[i], g = notes[i + 2];
+            int n = (int)(Rate * notes[i + 1] / 1000);
+            double k = 4.6 / n;                  // decai até ~1% no fim da nota
+            int attack = Rate * 2 / 1000;        // 2 ms de ataque evita estalo
+            for (int s = 0; s < n; s++) {
+                double env = Math.Exp(-k * s) * Math.Min(1.0, (double)s / attack);
+                double v = f > 0 ? g * env * Math.Sin(2 * Math.PI * f * s / Rate) : 0;
+                w.Write((short)(v * short.MaxValue));
+            }
+        }
+        w.Flush();
+        var data = pcm.ToArray();
+        var wav = new MemoryStream();
+        var h = new BinaryWriter(wav);
+        h.Write(new[] { 'R', 'I', 'F', 'F' }); h.Write(36 + data.Length);
+        h.Write(new[] { 'W', 'A', 'V', 'E', 'f', 'm', 't', ' ' }); h.Write(16);
+        h.Write((short)1); h.Write((short)1); h.Write(Rate); h.Write(Rate * 2);
+        h.Write((short)2); h.Write((short)16);
+        h.Write(new[] { 'd', 'a', 't', 'a' }); h.Write(data.Length); h.Write(data);
+        h.Flush();
+        return wav.ToArray();
+    }
+}
+"@
+
 # Uma instância só
 $createdNew = $false
 $mutex = New-Object System.Threading.Mutex($true, 'Local\PomodoroOverlay', [ref]$createdNew)
@@ -59,7 +95,7 @@ if (-not $createdNew) { return }
 # ---------- Configuração ----------
 $cfgDir  = Join-Path $env:APPDATA 'PomodoroOverlay'
 $cfgFile = Join-Path $cfgDir 'config.json'
-$cfg = [ordered]@{ FocusMin = 25; ShortMin = 5; LongMin = 15; AutoStart = $true; X = $null; Y = $null; Visible = $true; Docked = $true }
+$cfg = [ordered]@{ FocusMin = 25; ShortMin = 5; LongMin = 15; AutoStart = $true; X = $null; Y = $null; Visible = $true; Docked = $true; Alarm = $true; TickTock = $true }
 if (Test-Path $cfgFile) {
     try {
         $saved = Get-Content $cfgFile -Raw | ConvertFrom-Json
@@ -92,7 +128,30 @@ $S = @{
     Hover = $false; FlashUntil = [datetime]::MinValue
     Drag = $null; DragOrigin = $null; FloatPos = $null
     DockedNow = $false; Shown = $false; Tick = 0
+    LastSec = -1; MuteUntil = [datetime]::MinValue
     TextOn = [Drawing.Color]::FromArgb(240, 240, 240); TextOff = [Drawing.Color]::FromArgb(140, 140, 148)
+}
+
+function New-Sound([double[]]$notes) {
+    $ms = New-Object IO.MemoryStream(, [PomoSound]::Wav($notes))
+    $p = New-Object System.Media.SoundPlayer($ms)
+    $p.Load(); $p
+}
+$SndTick  = New-Sound @(2600, 30, 0.3)
+$SndTock  = New-Sound @(1900, 30, 0.3)
+$SndAlarm = New-Sound @(880, 160, 0.6, 0, 50, 0, 1175, 160, 0.6, 0, 50, 0, 1568, 320, 0.6, 0, 300, 0,
+                        880, 160, 0.6, 0, 50, 0, 1175, 160, 0.6, 0, 50, 0, 1568, 320, 0.6)
+$AlarmLength = [timespan]::FromMilliseconds(2100)
+
+# Tic-tac a cada segundo do contador; fica mudo enquanto o alarme toca (o SoundPlayer corta o som anterior)
+function Invoke-TickTock {
+    if (-not $S.Running) { $S.LastSec = -1; return }
+    $sec = [int][math]::Ceiling((Get-Remaining).TotalSeconds)
+    if ($sec -eq $S.LastSec) { return }
+    $S.LastSec = $sec
+    if ($cfg.TickTock -and $sec -gt 0 -and [datetime]::Now -ge $S.MuteUntil) {
+        if ($sec % 2 -eq 0) { $SndTick.Play() } else { $SndTock.Play() }
+    }
 }
 
 function Get-PhaseLength([string]$p) { [timespan]::FromMinutes([double]$cfg[$PhaseKey[$p]]) }
@@ -145,7 +204,12 @@ function Start-NextPhase([bool]$fromTimer) {
         $msg = if ($next -eq 'Foco') { "Pausa encerrada. Hora de focar por $min min." }
                else { "Foco concluído ($($S.Done) hoje). $next de $min min." }
         if (-not $run) { $msg += ' Clique no ícone para iniciar.' }
-        [System.Media.SystemSounds]::Exclamation.Play()
+        if ($cfg.Alarm) {
+            $SndAlarm.Play()
+            $S.MuteUntil = [datetime]::Now + $AlarmLength
+        } else {
+            [System.Media.SystemSounds]::Exclamation.Play()
+        }
         $tray.ShowBalloonTip(6000, 'Pomodoro', $msg, [Windows.Forms.ToolTipIcon]::None)
         $S.FlashUntil = [datetime]::Now.AddSeconds(6)
     }
@@ -375,6 +439,14 @@ $miAuto = $menu.Items.Add('Iniciar próxima fase automaticamente')
 $miAuto.CheckOnClick = $true; $miAuto.Checked = [bool]$cfg.AutoStart
 $miAuto.add_Click({ $cfg.AutoStart = $miAuto.Checked; Save-Config })
 
+$miAlarm = $menu.Items.Add('Alarme sonoro ao fim da fase')
+$miAlarm.CheckOnClick = $true; $miAlarm.Checked = [bool]$cfg.Alarm
+$miAlarm.add_Click({ $cfg.Alarm = $miAlarm.Checked; Save-Config })
+
+$miTick = $menu.Items.Add('Tic-tac durante o timer')
+$miTick.CheckOnClick = $true; $miTick.Checked = [bool]$cfg.TickTock
+$miTick.add_Click({ $cfg.TickTock = $miTick.Checked; Save-Config })
+
 $miShow = $menu.Items.Add('Mostrar contador na tela')
 $miShow.CheckOnClick = $true; $miShow.Checked = [bool]$cfg.Visible
 $miShow.add_Click({ Update-Visibility; Save-Config })
@@ -386,7 +458,7 @@ Add-Sep
 $miExit = $menu.Items.Add('Sair')
 $miExit.add_Click({
     Save-Config
-    $timer.Stop()
+    $timer.Stop(); $tickTimer.Stop()
     $hotkey.Release()
     $tray.Visible = $false
     $tray.Dispose()
@@ -494,9 +566,15 @@ $timer.add_Tick({
     Update-View
 })
 
+# Timer leve e mais fino só para o tic-tac sair no ritmo certo (o principal roda a cada 500 ms)
+$tickTimer = New-Object Windows.Forms.Timer
+$tickTimer.Interval = 50
+$tickTimer.add_Tick({ Invoke-TickTock })
+
 $form.Show(); $S.Shown = $true
 Update-Visibility
 $timer.Start()
+$tickTimer.Start()
 
 $ctx = New-Object Windows.Forms.ApplicationContext
 [Windows.Forms.Application]::Run($ctx)
