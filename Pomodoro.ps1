@@ -95,7 +95,7 @@ if (-not $createdNew) { return }
 # ---------- Configuração ----------
 $cfgDir  = Join-Path $env:APPDATA 'PomodoroOverlay'
 $cfgFile = Join-Path $cfgDir 'config.json'
-$cfg = [ordered]@{ FocusMin = 25; ShortMin = 5; LongMin = 15; AutoStart = $true; X = $null; Y = $null; Visible = $true; Docked = $true; Alarm = $true; TickTock = $true }
+$cfg = [ordered]@{ FocusMin = 25; ShortMin = 5; LongMin = 15; X = $null; Y = $null; Visible = $true; Docked = $true; Alarm = $true; TickTock = $true }
 if (Test-Path $cfgFile) {
     try {
         $saved = Get-Content $cfgFile -Raw | ConvertFrom-Json
@@ -195,7 +195,8 @@ function Start-NextPhase([bool]$fromTimer) {
     }
     $S.Phase = $next
     $S.Remaining = Get-PhaseLength $next
-    $run = if ($fromTimer) { [bool]$cfg.AutoStart } else { $S.Running }
+    # Fim de fase pelo timer sempre pausa: a próxima só começa quando iniciada manualmente
+    $run = if ($fromTimer) { $false } else { $S.Running }
     $S.Running = $run
     if ($run) { $S.EndAt = [datetime]::Now + $S.Remaining }
 
@@ -434,10 +435,6 @@ function Add-DurationMenu([string]$title, [string]$key, [int[]]$options) {
 Add-DurationMenu 'Duração do foco'        'FocusMin' @(15, 20, 25, 30, 45, 50)
 Add-DurationMenu 'Duração da pausa'       'ShortMin' @(3, 5, 10)
 Add-DurationMenu 'Duração da pausa longa' 'LongMin'  @(15, 20, 30)
-
-$miAuto = $menu.Items.Add('Iniciar próxima fase automaticamente')
-$miAuto.CheckOnClick = $true; $miAuto.Checked = [bool]$cfg.AutoStart
-$miAuto.add_Click({ $cfg.AutoStart = $miAuto.Checked; Save-Config })
 
 $miAlarm = $menu.Items.Add('Alarme sonoro ao fim da fase')
 $miAlarm.CheckOnClick = $true; $miAlarm.Checked = [bool]$cfg.Alarm
