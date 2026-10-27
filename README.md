@@ -10,13 +10,13 @@ Timer Pomodoro discreto para Windows, que fica encaixado na barra de tarefas (ao
 | Menu completo | Botão direito no contador ou no ícone da bandeja |
 | Mover (modo solto) | Arrastar o contador |
 
-A linha colorida indica a fase: vermelho = foco, verde = pausa, azul = pausa longa (a cada 4 focos). Números em cinza = pausado. Ao fim de cada fase aparece uma notificação do Windows com som.
+A linha colorida indica a fase: vermelho = foco, verde = pausa, azul = pausa longa (a cada 4 focos). Números em cinza = pausado. Ao fim de cada fase toca um alarme (três notas, duas vezes) e aparece uma notificação do Windows; o timer fica pausado na próxima fase até ser iniciado de novo (atalho, clique duplo, ícone da bandeja ou clique na notificação). Enquanto o timer corre, um tic-tac marca cada segundo.
 
 Pelo menu dá para:
 
 - pular de fase ou reiniciar a fase atual;
 - mudar as durações de foco, pausa e pausa longa (opções prontas ou **Personalizado...**, de 1 a 240 min);
-- ligar/desligar o início automático da próxima fase;
+- ligar/desligar o alarme sonoro (desligado, volta o som padrão do Windows) e o tic-tac;
 - fixar na barra de tarefas ou deixar solto e arrastável;
 - esconder o contador da tela.
 
