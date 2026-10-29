@@ -470,7 +470,7 @@ function Invoke-TickTock {
     $sec = [int][math]::Ceiling((Get-Remaining).TotalSeconds)
     if ($sec -eq $S.LastSec) { return }
     $S.LastSec = $sec
-    if ($cfg.Ambient -eq 'TicTac' -and $sec -gt 0 -and [datetime]::Now -ge $S.MuteUntil) {
+    if ($cfg.Ambient -eq 'TicTac' -and $S.Phase -eq 'Foco' -and $sec -gt 0 -and [datetime]::Now -ge $S.MuteUntil) {
         if ($sec % 2 -eq 0) { $SndTick.Play() } else { $SndTock.Play() }
     }
 }
@@ -656,7 +656,8 @@ function Get-AmbientSource([string]$id) {
 function Update-Ambient {
     $id = [string]$cfg.Ambient
     $now = [datetime]::Now
-    $active = ($S.Running -or $now -lt $S.PreviewUntil) -and $now -ge $S.MuteUntil
+    # Só no foco: nas pausas fica tudo em silêncio (a amostra ao escolher um som toca sempre)
+    $active = (($S.Running -and $S.Phase -eq 'Foco') -or $now -lt $S.PreviewUntil) -and $now -ge $S.MuteUntil
     Set-ClaudeFM ($active -and $id -eq 'ClaudeFM')
 
     if ($null -eq $wmp) { return }

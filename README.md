@@ -14,7 +14,7 @@ A linha colorida indica a fase: vermelho = foco, verde = pausa, azul = pausa lon
 
 ### Som de fundo
 
-Toca só enquanto o timer está rodando (pausa junto com ele e fica mudo durante o alarme). Escolha em **Som de fundo** no menu; com o timer pausado, a escolha toca uma amostra de 5 segundos.
+Toca só durante o foco, com o timer rodando: pausa junto com ele, fica mudo durante o alarme e, nas pausas (curta e longa), tudo fica em silêncio, inclusive o tic-tac. O alarme do fim da pausa continua tocando. Escolha em **Som de fundo** no menu; com o timer pausado, a escolha toca uma amostra de 5 segundos.
 
 | Opção | O que é |
 |---|---|
