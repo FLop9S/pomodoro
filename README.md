@@ -21,9 +21,11 @@ Toca só enquanto o timer está rodando (pausa junto com ele e fica mudo durante
 | Nenhum | Silêncio |
 | Tic-tac | Um tique por segundo (padrão) |
 | Minecraft (savana) | Clima de "study with me" no Minecraft: vento com rajadas, pássaros esparsos e um piano calmo que toca por um tempo e some, como no jogo. Tudo gerado pelo próprio app (composição original, não é a trilha do jogo) |
-| Chuva, Ruído marrom, Mar | Sons gerados pelo próprio app, em loop sem emenda |
+| Chuva | Chuva forte de noite com trovões distantes (um a cada 25 a 50 s): chiado de fundo, chuvisco denso e gotas caindo em poças |
+| Ruído marrom, Mar | Sons gerados pelo próprio app, em loop sem emenda |
+| Claude FM | A rádio lo-fi 24/7 da Anthropic (a mesma do `/radio` do Claude Code). Toca dentro do Pomodoro, com o player oficial do YouTube numa janela escondida; segue o timer e o volume como os outros sons. Leva uns 10 s para conectar e precisa de internet com acesso ao YouTube |
 
-Os sons são criados na primeira vez que são escolhidos (menos de 1 segundo) e ficam em `%APPDATA%\PomodoroOverlay\sons`. O volume do som de fundo fica em **Som de fundo > Volume**. Nada depende de internet.
+Os sons são criados na primeira vez que são escolhidos (menos de 1 segundo) e ficam em `%APPDATA%\PomodoroOverlay\sons`. O volume do som de fundo fica em **Som de fundo > Volume**. Só o Claude FM depende de internet.
 
 Pelo menu dá para:
 
@@ -31,6 +33,7 @@ Pelo menu dá para:
 - mudar as durações de foco, pausa e pausa longa (opções prontas ou **Personalizado...**, de 1 a 240 min);
 - ligar/desligar o alarme sonoro (desligado, volta o som padrão do Windows);
 - escolher o som de fundo e o volume;
+- ligar/desligar a **Cafeína**: o computador não dorme, a tela não apaga nem bloqueia e o Teams não fica "Ausente" (veja abaixo);
 - fixar na barra de tarefas ou deixar solto e arrastável;
 - esconder o contador da tela.
 
@@ -39,6 +42,10 @@ Outros comportamentos:
 - não aparece no Alt+Tab;
 - some quando há algo em tela cheia (vídeo, apresentação);
 - se `Ctrl+Alt+P` já estiver em uso por outro programa, o atalho vira `Ctrl+Alt+Shift+P`.
+
+### Cafeína
+
+Faz o mesmo que o app Caffeine, sem precisar dele: pede ao Windows para não dormir nem apagar a tela e, depois de 1 minuto sem uso, "aperta" a tecla F15 (que não faz nada) uma vez por minuto. Enquanto você usa o PC, nenhuma tecla é enviada. Liga e desliga pelo menu; a escolha fica salva e, ligada, o ícone da bandeja mostra "Cafeína". Ao sair do Pomodoro, o Windows volta ao normal.
 
 ## Instalação
 
@@ -52,4 +59,5 @@ As configurações (durações, posição, modo) ficam em `%APPDATA%\PomodoroOve
 
 - Windows 10 ou 11 com Windows PowerShell 5.1 (já vem no sistema).
 - O modo "na barra de tarefas" funciona com a barra embaixo ou em cima da tela.
-- Sons de fundo (exceto tic-tac) usam o Windows Media Player, que vem com o Windows; sem ele, essas opções aparecem desativadas.
+- Sons de fundo (exceto tic-tac e Claude FM) usam o Windows Media Player, que vem com o Windows; sem ele, essas opções aparecem desativadas.
+- O Claude FM usa o WebView2 (motor do Edge, já instalado no Windows 10/11 atualizado). A pasta `lib` traz as 3 DLLs oficiais da Microsoft que o PowerShell precisa para usá-lo (pacote NuGet `Microsoft.Web.WebView2` 1.0.4258.31, assinadas pela Microsoft); mantenha `lib` junto do `Pomodoro.ps1`.
