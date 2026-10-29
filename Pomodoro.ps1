@@ -84,6 +84,254 @@ public static class PomoSound {
 }
 "@
 
+# Sons de fundo gerados por síntese (sem gravação nem música de terceiros), salvos como WAV em loop
+Add-Type -TypeDefinition @"
+using System;
+using System.IO;
+public static class PomoAmbient {
+    const int Rate = 22050;
+
+    public static void Generate(string kind, string path) {
+        var r = new Random(42);
+        float[] x;
+        switch (kind) {
+            case "Marrom":    x = Loop(Brown(r, Rate * 62), Rate * 2); break;
+            case "Chuva":     x = Loop(Rain(r, Rate * 64), Rate * 4); break;
+            case "Mar":       x = Loop(Sea(r, Rate * 76), Rate * 6); break;
+            case "Minecraft": x = Loop(Savanna(r), Rate * 4); break;
+            default: throw new ArgumentException(kind);
+        }
+        Save(x, path);
+    }
+
+    // ---------- ruídos ----------
+    static float[] White(Random r, int n) { var x = new float[n]; for (int i = 0; i < n; i++) x[i] = (float)(r.NextDouble() * 2 - 1); return x; }
+
+    static float[] Brown(Random r, int n) {
+        var x = new float[n]; double b = 0;
+        for (int i = 0; i < n; i++) { b = (b + 0.02 * (r.NextDouble() * 2 - 1)) / 1.02; x[i] = (float)b; }
+        return x;
+    }
+
+    static float[] Pink(Random r, int n) {   // filtro de Paul Kellet
+        var x = new float[n]; double b0 = 0, b1 = 0, b2 = 0, b3 = 0, b4 = 0, b5 = 0, b6 = 0;
+        for (int i = 0; i < n; i++) {
+            double w = r.NextDouble() * 2 - 1;
+            b0 = 0.99886 * b0 + w * 0.0555179; b1 = 0.99332 * b1 + w * 0.0750759;
+            b2 = 0.96900 * b2 + w * 0.1538520; b3 = 0.86650 * b3 + w * 0.3104856;
+            b4 = 0.55000 * b4 + w * 0.5329522; b5 = -0.7616 * b5 - w * 0.0168980;
+            x[i] = (float)((b0 + b1 + b2 + b3 + b4 + b5 + b6 + w * 0.5362) * 0.11); b6 = w * 0.115926;
+        }
+        return x;
+    }
+
+    static void HighPass(float[] x, double hz) {
+        double a = Math.Exp(-2 * Math.PI * hz / Rate), y = 0, prev = 0;
+        for (int i = 0; i < x.Length; i++) { y = a * (y + x[i] - prev); prev = x[i]; x[i] = (float)y; }
+    }
+
+    static void LowPass(float[] x, double hz) {
+        double a = 1 - Math.Exp(-2 * Math.PI * hz / Rate), y = 0;
+        for (int i = 0; i < x.Length; i++) { y += a * (x[i] - y); x[i] = (float)y; }
+    }
+
+    // Chuva: chiado de fundo + gotas curtas em tempos aleatórios
+    static float[] Rain(Random r, int n) {
+        var x = Pink(r, n); HighPass(x, 350); LowPass(x, 6000);
+        for (int i = 0; i < n; i++) x[i] *= (float)(0.55 * (1 + 0.15 * Math.Sin(2 * Math.PI * i / (Rate * 16.0))));
+        int t = 0;
+        while (true) {
+            t += (int)(-Math.Log(1 - r.NextDouble()) * Rate / 55.0);   // ~55 gotas por segundo
+            if (t >= n) break;
+            double f = 1800 + r.NextDouble() * 3800, amp = 0.04 + Math.Pow(r.NextDouble(), 3) * 0.22;
+            int len = (int)(Rate * (0.006 + r.NextDouble() * 0.02));
+            for (int s = 0; s < len && t + s < n; s++)
+                x[t + s] += (float)(amp * Math.Exp(-6.0 * s / len) * Math.Sin(2 * Math.PI * f * s / Rate) * (r.NextDouble() * 0.6 + 0.4));
+        }
+        return x;
+    }
+
+    // Mar: ondas de 7 a 12 s que sobem devagar, quebram e recuam
+    static float[] Sea(Random r, int n) {
+        var low = Brown(r, n); var hiss = Pink(r, n); LowPass(hiss, 2500);
+        var env = new double[n];
+        int t = 0;
+        while (t < n) {
+            int len = (int)(Rate * (7 + r.NextDouble() * 5)); double peak = 0.7 + r.NextDouble() * 0.3;
+            for (int s = 0; s < len && t + s < n; s++) {
+                double p = (double)s / len;
+                env[t + s] = peak * (p < 0.55 ? Math.Pow(Math.Sin(Math.PI / 2 * p / 0.55), 2) : Math.Exp(-(p - 0.55) * 5.5));
+            }
+            t += len;
+        }
+        double e = 0; var x = new float[n];
+        for (int i = 0; i < n; i++) {
+            e += (env[i] - e) * 0.0004;                                   // suaviza as emendas entre ondas
+            x[i] = (float)(low[i] * 3.0 * (0.25 + 0.75 * e) + hiss[i] * 0.55 * e * e);
+        }
+        return x;
+    }
+
+    // ---------- piano calmo, notas esparsas sobre acordes (atmosfera de jogo) ----------
+    static double Hz(int midi) { return 440.0 * Math.Pow(2, (midi - 69) / 12.0); }
+
+    // Nota de piano: 6 harmônicos que decaem, calculados por rotação (sem seno/exp por amostra)
+    static void Note(float[] x, int start, int midi, double amp, double dur) {
+        const int H = 6;
+        double f = Hz(midi); int n = (int)(dur * Rate), attack = Rate * 5 / 1000;
+        var c = new double[H]; var sn = new double[H]; var re = new double[H]; var im = new double[H];
+        var g = new double[H]; var d = new double[H];
+        for (int h = 0; h < H; h++) {
+            int k = h + 1;
+            double w = 2 * Math.PI * f * k * (1 + 0.0003 * k * k) / Rate;
+            c[h] = Math.Cos(w); sn[h] = Math.Sin(w); re[h] = 1; im[h] = 0;
+            g[h] = Math.Pow(0.5, h); d[h] = Math.Exp(-(1.2 + 0.9 * k) / Rate);
+        }
+        for (int s = 0; s < n && start + s < x.Length; s++) {
+            double v = 0;
+            for (int h = 0; h < H; h++) {
+                v += g[h] * im[h];
+                double nr = re[h] * c[h] - im[h] * sn[h];
+                im[h] = re[h] * sn[h] + im[h] * c[h]; re[h] = nr; g[h] *= d[h];
+            }
+            x[start + s] += (float)(amp * Math.Min(1.0, (double)s / attack) * v);
+        }
+    }
+
+    // ---------- Minecraft, savana: vento com rajadas, pássaros esparsos e o piano que vem e vai ----------
+    static float[] Savanna(Random r) {
+        var piano = Piano(r);                      // ~100 s de piano...
+        int n = piano.Length * 2;                  // ...seguidos de ~100 s só de natureza, como no jogo
+        var wind = Wind(r, n); var birds = Birds(r, n);
+        Normalize(wind, 0.10); Normalize(piano, 0.09);
+        var x = new float[n];
+        for (int i = 0; i < n; i++) x[i] = wind[i] + birds[i] + (i < piano.Length ? piano[i] : 0);
+        return x;
+    }
+
+    static void Normalize(float[] x, double rms) {
+        double sum = 0; int cnt = 0;
+        for (int i = 0; i < x.Length; i += 7) { sum += x[i] * x[i]; cnt++; }
+        double k = rms / Math.Sqrt(sum / cnt + 1e-12);
+        for (int i = 0; i < x.Length; i++) x[i] = (float)(x[i] * k);
+    }
+
+    // Vento: ruído num filtro passa-banda cuja frequência e volume sobem e descem com as rajadas
+    static float[] Wind(Random r, int n) {
+        var x = new float[n]; var rumble = Brown(r, n);
+        double gust = 0.5, target = 0.5, low = 0, band = 0;
+        int next = 0;
+        for (int i = 0; i < n; i++) {
+            if (i >= next) { target = 0.15 + r.NextDouble() * 0.85; next = i + (int)(Rate * (2.5 + r.NextDouble() * 4)); }
+            gust += (target - gust) * (1.0 / (Rate * 1.6));
+            double fc = 220 + 650 * gust, f1 = 2 * Math.Sin(Math.PI * fc / Rate);
+            double input = r.NextDouble() * 2 - 1;
+            double high = input - low - 1.1 * band;
+            band += f1 * high; low += f1 * band;
+            x[i] = (float)(band * (0.25 + 0.75 * gust) + rumble[i] * 1.5);
+        }
+        return x;
+    }
+
+    // Pássaros: grupos de 2 a 5 trinados curtos, de tempos em tempos
+    static float[] Birds(Random r, int n) {
+        var x = new float[n];
+        int t = (int)(Rate * (2 + r.NextDouble() * 4));
+        while (t < n) {
+            int chirps = 2 + r.Next(4);
+            double baseF = 2600 + r.NextDouble() * 1900, sweep = (r.NextDouble() < 0.5 ? 1 : -1) * (500 + r.NextDouble() * 900);
+            double amp = 0.025 + r.NextDouble() * 0.035;
+            int pos = t;
+            for (int c = 0; c < chirps && pos < n; c++) {
+                int len = (int)(Rate * (0.05 + r.NextDouble() * 0.07)); double ph = 0;
+                for (int s = 0; s < len && pos + s < n; s++) {
+                    double p = (double)s / len, f = baseF + sweep * p;
+                    ph += 2 * Math.PI * f / Rate;
+                    double env = Math.Sin(Math.PI * p); x[pos + s] += (float)(amp * env * env * Math.Sin(ph));
+                }
+                pos += len + (int)(Rate * (0.04 + r.NextDouble() * 0.09));
+            }
+            t = pos + (int)(Rate * (3 + r.NextDouble() * 10));
+        }
+        return x;
+    }
+
+    static float[] Piano(Random r) {
+        int[][] chords = {
+            new[] { 48, 60, 64, 67, 71, 72, 76 },   // Cmaj7
+            new[] { 45, 57, 60, 64, 67, 69, 72 },   // Am7
+            new[] { 41, 57, 60, 65, 69, 72, 76 },   // Fmaj7
+            new[] { 43, 59, 62, 67, 71, 74, 79 },   // G6
+            new[] { 40, 59, 64, 67, 71, 76 },       // Em7
+            new[] { 41, 60, 65, 69, 72, 77 }        // F
+        };
+        int[] order = { 0, 1, 2, 3, 0, 4, 5, 3, 1, 2, 0, 3 };
+        double chordLen = 8.0; int total = (int)(Rate * (order.Length * chordLen + 4));
+        var dry = new float[total];
+        for (int c = 0; c < order.Length; c++) {
+            var ch = chords[order[c]]; double t0 = c * chordLen;
+            Note(dry, (int)(t0 * Rate), ch[0], 0.30, 6);
+            double t = t0 + 0.5 + r.NextDouble();
+            while (t < t0 + chordLen - 0.8) {
+                double roll = r.NextDouble();
+                if (roll < 0.62) Note(dry, (int)(t * Rate), ch[1 + r.Next(ch.Length - 1)], 0.20 + r.NextDouble() * 0.12, 4);
+                else if (roll < 0.85) {
+                    int a = 1 + r.Next(ch.Length - 2);
+                    Note(dry, (int)(t * Rate), ch[a], 0.17, 4); Note(dry, (int)((t + 0.03) * Rate), ch[a + 1], 0.15, 4);
+                }
+                t += 1.2 + r.NextDouble() * 1.9;
+            }
+        }
+        return Reverb(dry);
+    }
+
+    static float[] Reverb(float[] x) {   // Schroeder: 4 combs + 2 allpass
+        int[] cd = { 1116, 1188, 1277, 1356 }; var wet = new float[x.Length];
+        foreach (int d in cd) {
+            var buf = new float[d]; int p = 0; float lp = 0;
+            for (int i = 0; i < x.Length; i++) {
+                float o = buf[p]; lp = o * 0.6f + lp * 0.4f;
+                buf[p] = x[i] + lp * 0.82f; p = (p + 1) % d; wet[i] += o * 0.25f;
+            }
+        }
+        foreach (int d in new[] { 556, 225 }) {
+            var buf = new float[d]; int p = 0;
+            for (int i = 0; i < x.Length; i++) {
+                float b = buf[p], o = -wet[i] + b; buf[p] = wet[i] + b * 0.5f; p = (p + 1) % d; wet[i] = o;
+            }
+        }
+        var y = new float[x.Length];
+        for (int i = 0; i < x.Length; i++) y[i] = x[i] * 0.75f + wet[i] * 0.45f;
+        return y;
+    }
+
+    // ---------- loop sem emenda e gravação ----------
+    static float[] Loop(float[] x, int fade) {
+        int n = x.Length - fade; var y = new float[n];
+        Array.Copy(x, y, n);
+        for (int i = 0; i < fade; i++) {
+            double t = (double)i / fade;
+            y[i] = (float)(x[i] * Math.Sqrt(t) + x[n + i] * Math.Sqrt(1 - t));
+        }
+        return y;
+    }
+
+    static void Save(float[] x, string path) {
+        float peak = 1e-6f; foreach (var v in x) peak = Math.Max(peak, Math.Abs(v));
+        float g = 0.85f / peak; int bytes = x.Length * 2;
+        using (var fs = File.Create(path))
+        using (var h = new BinaryWriter(fs)) {
+            h.Write(new[] { 'R', 'I', 'F', 'F' }); h.Write(36 + bytes);
+            h.Write(new[] { 'W', 'A', 'V', 'E', 'f', 'm', 't', ' ' }); h.Write(16);
+            h.Write((short)1); h.Write((short)1); h.Write(Rate); h.Write(Rate * 2);
+            h.Write((short)2); h.Write((short)16);
+            h.Write(new[] { 'd', 'a', 't', 'a' }); h.Write(bytes);
+            foreach (var v in x) h.Write((short)(Math.Max(-1f, Math.Min(1f, v * g)) * 32767));
+        }
+    }
+}
+"@
+
 # Uma instância só
 $createdNew = $false
 $mutex = New-Object System.Threading.Mutex($true, 'Local\PomodoroOverlay', [ref]$createdNew)
@@ -95,13 +343,17 @@ if (-not $createdNew) { return }
 # ---------- Configuração ----------
 $cfgDir  = Join-Path $env:APPDATA 'PomodoroOverlay'
 $cfgFile = Join-Path $cfgDir 'config.json'
-$cfg = [ordered]@{ FocusMin = 25; ShortMin = 5; LongMin = 15; X = $null; Y = $null; Visible = $true; Docked = $true; Alarm = $true; TickTock = $true }
+$cfg = [ordered]@{ FocusMin = 25; ShortMin = 5; LongMin = 15; X = $null; Y = $null; Visible = $true; Docked = $true; Alarm = $true; TickTock = $true
+                  Ambient = $null; Volume = 35 }
 if (Test-Path $cfgFile) {
     try {
         $saved = Get-Content $cfgFile -Raw | ConvertFrom-Json
         foreach ($k in @($cfg.Keys)) { if ($null -ne $saved.$k) { $cfg[$k] = $saved.$k } }
     } catch {}
 }
+# Versões antigas só tinham liga/desliga do tic-tac
+if (-not $cfg.Ambient) { $cfg.Ambient = if ($cfg.TickTock -eq $false) { 'Nenhum' } else { 'TicTac' } }
+$cfg.Remove('TickTock')
 
 function Save-Config {
     $cfg.X = $S.FloatPos.X; $cfg.Y = $S.FloatPos.Y
@@ -129,6 +381,7 @@ $S = @{
     Drag = $null; DragOrigin = $null; FloatPos = $null
     DockedNow = $false; Shown = $false; Tick = 0
     LastSec = -1; MuteUntil = [datetime]::MinValue
+    AmbSrc = ''; AmbPlaying = $false; PreviewUntil = [datetime]::MinValue
     TextOn = [Drawing.Color]::FromArgb(240, 240, 240); TextOff = [Drawing.Color]::FromArgb(140, 140, 148)
 }
 
@@ -149,7 +402,7 @@ function Invoke-TickTock {
     $sec = [int][math]::Ceiling((Get-Remaining).TotalSeconds)
     if ($sec -eq $S.LastSec) { return }
     $S.LastSec = $sec
-    if ($cfg.TickTock -and $sec -gt 0 -and [datetime]::Now -ge $S.MuteUntil) {
+    if ($cfg.Ambient -eq 'TicTac' -and $sec -gt 0 -and [datetime]::Now -ge $S.MuteUntil) {
         if ($sec % 2 -eq 0) { $SndTick.Play() } else { $SndTock.Play() }
     }
 }
@@ -177,7 +430,78 @@ function Switch-Timer {
         $S.EndAt = [datetime]::Now + $S.Remaining
         $S.Running = $true
     }
+    $S.PreviewUntil = [datetime]::MinValue
+    Update-Ambient
     Update-View
+}
+
+# ---------- Som de fundo (toca só com o timer rodando) ----------
+$Ambients = [ordered]@{
+    'Nenhum' = 'Nenhum'; 'TicTac' = 'Tic-tac'
+    'Minecraft' = 'Minecraft (savana: vento, pássaros e piano)'; 'Chuva' = 'Chuva'; 'Marrom' = 'Ruído marrom'; 'Mar' = 'Mar'
+}
+$GeneratedSounds = @('Minecraft', 'Chuva', 'Marrom', 'Mar')
+$SoundDir = Join-Path $cfgDir 'sons'
+$SoundVersion = 'v2'   # mudar quando a síntese mudar, para regerar os arquivos
+if (-not $Ambients.Contains([string]$cfg.Ambient)) { $cfg.Ambient = 'TicTac' }   # ex.: rádios, que saíram
+
+$wmp = $null
+try {
+    $wmp = New-Object -ComObject WMPlayer.OCX
+    $wmp.settings.autoStart = $false
+    $wmp.settings.volume = [int]$cfg.Volume
+} catch {}
+
+# Caminho do WAV gerado (cria na primeira vez)
+function Get-AmbientSource([string]$id) {
+    if ($GeneratedSounds -contains $id) {
+        $p = Join-Path $SoundDir "$id-$SoundVersion.wav"
+        if (-not (Test-Path $p)) {
+            New-Item -ItemType Directory -Force $SoundDir | Out-Null
+            [Windows.Forms.Cursor]::Current = [Windows.Forms.Cursors]::WaitCursor
+            [PomoAmbient]::Generate($id, $p)
+            [Windows.Forms.Cursor]::Current = [Windows.Forms.Cursors]::Default
+        }
+        return $p
+    }
+    return $null
+}
+
+function Update-Ambient {
+    if ($null -eq $wmp) { return }
+    $id = [string]$cfg.Ambient
+    $now = [datetime]::Now
+    $want = ($S.Running -or $now -lt $S.PreviewUntil) -and $now -ge $S.MuteUntil -and ($GeneratedSounds -contains $id)
+
+    if (-not $want) {
+        if ($S.AmbPlaying) { $wmp.controls.pause(); $S.AmbPlaying = $false }
+        return
+    }
+    $src = Get-AmbientSource $id
+    if ($S.AmbSrc -ne $src) {
+        $wmp.controls.stop()
+        $wmp.URL = $src
+        $wmp.settings.setMode('loop', $true)
+        $S.AmbSrc = $src
+    }
+    if (-not $S.AmbPlaying) { $wmp.controls.play(); $S.AmbPlaying = $true }
+}
+
+function Set-Ambient([string]$id) {
+    $cfg.Ambient = $id
+    if ($null -ne $wmp) { $wmp.controls.stop() }
+    $S.AmbPlaying = $false; $S.AmbSrc = ''
+    if ($GeneratedSounds -contains $id) { [void](Get-AmbientSource $id) }
+    # Pausado: toca uma amostra curta para a pessoa ouvir o que escolheu
+    if (-not $S.Running) { $S.PreviewUntil = [datetime]::Now.AddSeconds(5) }
+    Sync-AmbientChecks; Save-Config; Update-Ambient
+}
+
+function Sync-AmbientChecks {
+    foreach ($o in $miAmb.DropDownItems) {
+        if ($o.Tag -is [string] -and $Ambients.Contains($o.Tag)) { $o.Checked = ($o.Tag -eq $cfg.Ambient) }
+    }
+    foreach ($o in $miVol.DropDownItems) { $o.Checked = ([int]$o.Tag -eq [int]$cfg.Volume) }
 }
 
 function Reset-Phase {
@@ -275,12 +599,16 @@ function Get-TaskbarInfo {
     @{ Left = $r.Left; Top = $r.Top; Right = $r.Right; Bottom = $r.Bottom; NotifyLeft = $notifyLeft }
 }
 
-function Get-ScreenColor([int]$x, [int]$y) {
-    $bmp = New-Object Drawing.Bitmap 1, 1
-    $g = [Drawing.Graphics]::FromImage($bmp)
-    $g.CopyFromScreen($x, $y, 0, 0, (New-Object Drawing.Size 1, 1))
-    $g.Dispose(); $c = $bmp.GetPixel(0, 0); $bmp.Dispose()
-    [Drawing.Color]::FromArgb(255, $c.R, $c.G, $c.B)
+# Cor da barra pelo tema do Windows (claro/escuro/cor de destaque). Não lê pixels da tela:
+# com transparência ligada a barra mostra o que está atrás, e a cor mudava com o conteúdo.
+function Get-TaskbarColor {
+    $pers = Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize' -ErrorAction SilentlyContinue
+    if ($pers -and $pers.ColorPrevalence -eq 1) {
+        $pal = (Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Accent' -ErrorAction SilentlyContinue).AccentPalette
+        if ($pal -and $pal.Length -ge 24) { return [Drawing.Color]::FromArgb($pal[20], $pal[21], $pal[22]) }   # tom escuro do destaque
+    }
+    if ($pers -and $pers.SystemUsesLightTheme -eq 1) { return [Drawing.Color]::FromArgb(243, 243, 243) }
+    return [Drawing.Color]::FromArgb(31, 31, 31)
 }
 
 # Encaixa o contador à esquerda dos ícones do relógio, com a cor da barra
@@ -296,7 +624,7 @@ function Update-Dock {
     $loc = New-Object Drawing.Point(($tbi.NotifyLeft - $w - (Px 2)), ($tbi.Top + [int](($tbH - $h) / 2)))
     if ($form.Location -ne $loc) { $form.Location = $loc }
 
-    $bg = Get-ScreenColor ($tbi.NotifyLeft - 1) ($tbi.Top + (Px 2))
+    $bg = Get-TaskbarColor
     if ($form.BackColor.ToArgb() -ne $bg.ToArgb()) {
         $form.BackColor = $bg
         $light = ($bg.R * 0.299 + $bg.G * 0.587 + $bg.B * 0.114) -gt 140
@@ -394,6 +722,17 @@ function Sync-DurationChecks($parent, [string]$key) {
     $custom.Text = if ($found) { 'Personalizado...' } else { "Personalizado ($cur min)..." }
 }
 
+# Abre o submenu para o lado que cabe na MESMA tela (senão vai para o outro monitor)
+function Add-SmartDropDown($item) {
+    $item.add_DropDownOpening({
+        param($sender, $e)
+        $owner = $sender.Owner.Bounds
+        $wa = [Windows.Forms.Screen]::FromRectangle($owner).WorkingArea
+        $need = $sender.DropDown.PreferredSize.Width
+        $sender.DropDownDirection = if ($owner.Right + $need -gt $wa.Right) { 'Left' } else { 'Right' }
+    })
+}
+
 function Add-DurationMenu([string]$title, [string]$key, [int[]]$options) {
     $parent = New-Object Windows.Forms.ToolStripMenuItem($title)
     foreach ($m in $options) {
@@ -422,13 +761,7 @@ function Add-DurationMenu([string]$title, [string]$key, [int[]]$options) {
         Sync-DurationChecks $sender.Tag.Parent $k
     })
     [void]$parent.DropDownItems.Add($ci)
-    # Abre o submenu para o lado que cabe na MESMA tela (senão vai para o outro monitor)
-    $parent.add_DropDownOpening({
-        param($sender, $e)
-        $wa = [Windows.Forms.Screen]::FromRectangle($menu.Bounds).WorkingArea
-        $need = $sender.DropDown.PreferredSize.Width
-        $sender.DropDownDirection = if ($menu.Bounds.Right + $need -gt $wa.Right) { 'Left' } else { 'Right' }
-    })
+    Add-SmartDropDown $parent
     Sync-DurationChecks $parent $key
     [void]$menu.Items.Add($parent)
 }
@@ -440,9 +773,37 @@ $miAlarm = $menu.Items.Add('Alarme sonoro ao fim da fase')
 $miAlarm.CheckOnClick = $true; $miAlarm.Checked = [bool]$cfg.Alarm
 $miAlarm.add_Click({ $cfg.Alarm = $miAlarm.Checked; Save-Config })
 
-$miTick = $menu.Items.Add('Tic-tac durante o timer')
-$miTick.CheckOnClick = $true; $miTick.Checked = [bool]$cfg.TickTock
-$miTick.add_Click({ $cfg.TickTock = $miTick.Checked; Save-Config })
+$miAmb = New-Object Windows.Forms.ToolStripMenuItem('Som de fundo')
+foreach ($k in $Ambients.Keys) {
+    if ($k -eq 'Minecraft') { [void]$miAmb.DropDownItems.Add((New-Object Windows.Forms.ToolStripSeparator)) }
+    $it = New-Object Windows.Forms.ToolStripMenuItem($Ambients[$k])
+    $it.Tag = $k
+    $it.add_Click({ param($sender, $e) Set-Ambient $sender.Tag })
+    [void]$miAmb.DropDownItems.Add($it)
+}
+[void]$miAmb.DropDownItems.Add((New-Object Windows.Forms.ToolStripSeparator))
+$miVol = New-Object Windows.Forms.ToolStripMenuItem('Volume')
+foreach ($v in @(@('Baixo', 15), @('Médio', 35), @('Alto', 60), @('Máximo', 100))) {
+    $it = New-Object Windows.Forms.ToolStripMenuItem($v[0])
+    $it.Tag = $v[1]
+    $it.add_Click({
+        param($sender, $e)
+        $cfg.Volume = [int]$sender.Tag
+        if ($null -ne $wmp) { $wmp.settings.volume = $cfg.Volume }
+        if (-not $S.Running) { $S.PreviewUntil = [datetime]::Now.AddSeconds(4); Update-Ambient }
+        Sync-AmbientChecks; Save-Config
+    })
+    [void]$miVol.DropDownItems.Add($it)
+}
+Add-SmartDropDown $miVol
+[void]$miAmb.DropDownItems.Add($miVol)
+if ($null -eq $wmp) {   # sem Windows Media Player: só tic-tac funciona
+    foreach ($o in $miAmb.DropDownItems) { if ($o.Tag -is [string] -and $o.Tag -notin 'Nenhum', 'TicTac') { $o.Enabled = $false } }
+    $miVol.Enabled = $false
+}
+Add-SmartDropDown $miAmb
+[void]$menu.Items.Add($miAmb)
+Sync-AmbientChecks
 
 $miShow = $menu.Items.Add('Mostrar contador na tela')
 $miShow.CheckOnClick = $true; $miShow.Checked = [bool]$cfg.Visible
@@ -456,6 +817,7 @@ $miExit = $menu.Items.Add('Sair')
 $miExit.add_Click({
     Save-Config
     $timer.Stop(); $tickTimer.Stop()
+    if ($null -ne $wmp) { $wmp.controls.stop() }
     $hotkey.Release()
     $tray.Visible = $false
     $tray.Dispose()
@@ -560,6 +922,7 @@ $timer.add_Tick({
     if ($S.Running -and (Get-Remaining) -le [timespan]::Zero) { Start-NextPhase $true }
     if ($S.DockedNow -and $S.Tick % 4 -eq 0) { Update-Dock }   # acompanha mudanças nos ícones/tema
     Update-Visibility
+    Update-Ambient
     Update-View
 })
 
