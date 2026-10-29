@@ -24,6 +24,15 @@ public static class PomoNative {
     [DllImport("user32.dll")] public static extern int GetWindowLong(IntPtr h, int idx);
     [DllImport("user32.dll")] public static extern int SetWindowLong(IntPtr h, int idx, int value);
     [DllImport("user32.dll")] public static extern bool DestroyIcon(IntPtr hIcon);
+    // "Cafeína": manter o PC ativo
+    [DllImport("kernel32.dll")] public static extern uint SetThreadExecutionState(uint flags);
+    [DllImport("user32.dll")] public static extern void keybd_event(byte vk, byte scan, uint flags, UIntPtr extra);
+    [StructLayout(LayoutKind.Sequential)] struct LASTINPUTINFO { public uint cbSize; public uint dwTime; }
+    [DllImport("user32.dll")] static extern bool GetLastInputInfo(ref LASTINPUTINFO lii);
+    public static uint IdleMs() {
+        var lii = new LASTINPUTINFO(); lii.cbSize = (uint)Marshal.SizeOf(lii);
+        return GetLastInputInfo(ref lii) ? (uint)Environment.TickCount - lii.dwTime : 0;
+    }
     [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
     [DllImport("dwmapi.dll")] public static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int value, int size);
 }
@@ -96,7 +105,7 @@ public static class PomoAmbient {
         float[] x;
         switch (kind) {
             case "Marrom":    x = Loop(Brown(r, Rate * 62), Rate * 2); break;
-            case "Chuva":     x = Loop(Rain(r, Rate * 64), Rate * 4); break;
+            case "Chuva":     x = Loop(Rain(r, Rate * 124), Rate * 4); break;
             case "Mar":       x = Loop(Sea(r, Rate * 76), Rate * 6); break;
             case "Minecraft": x = Loop(Savanna(r), Rate * 4); break;
             default: throw new ArgumentException(kind);
@@ -135,20 +144,79 @@ public static class PomoAmbient {
         for (int i = 0; i < x.Length; i++) { y += a * (x[i] - y); x[i] = (float)y; }
     }
 
-    // Chuva: chiado de fundo + gotas curtas em tempos aleatórios
+    // Chuva de noite com trovões: 3 camadas de água + trovoadas distantes
     static float[] Rain(Random r, int n) {
-        var x = Pink(r, n); HighPass(x, 350); LowPass(x, 6000);
-        for (int i = 0; i < n; i++) x[i] *= (float)(0.55 * (1 + 0.15 * Math.Sin(2 * Math.PI * i / (Rate * 16.0))));
-        int t = 0;
+        // 1) chiado de fundo, baixo e abafado (a "massa" da chuva ao longe)
+        var bed = Pink(r, n); HighPass(bed, 300); LowPass(bed, 4000);
+        for (int i = 0; i < n; i++) bed[i] *= (float)(1 + 0.12 * Math.Sin(2 * Math.PI * i / (Rate * 19.0)));
+
+        // 2) chuvisco denso: centenas de estalinhos de ruído por segundo (gotas em folhas, telhado, chão)
+        var patter = new float[n];
+        double t = 0;
         while (true) {
-            t += (int)(-Math.Log(1 - r.NextDouble()) * Rate / 55.0);   // ~55 gotas por segundo
-            if (t >= n) break;
-            double f = 1800 + r.NextDouble() * 3800, amp = 0.04 + Math.Pow(r.NextDouble(), 3) * 0.22;
-            int len = (int)(Rate * (0.006 + r.NextDouble() * 0.02));
-            for (int s = 0; s < len && t + s < n; s++)
-                x[t + s] += (float)(amp * Math.Exp(-6.0 * s / len) * Math.Sin(2 * Math.PI * f * s / Rate) * (r.NextDouble() * 0.6 + 0.4));
+            t += -Math.Log(1 - r.NextDouble()) * Rate / 450.0;
+            int p = (int)t; if (p >= n) break;
+            int len = (int)(Rate * (0.0015 + r.NextDouble() * 0.004));
+            double amp = 0.15 + Math.Pow(r.NextDouble(), 4) * 0.85;
+            for (int s = 0; s < len && p + s < n; s++)
+                patter[p + s] += (float)(amp * Math.Exp(-5.0 * s / len) * (r.NextDouble() * 2 - 1));
         }
+        HighPass(patter, 900); LowPass(patter, 7500);
+
+        // 3) gotas em poças: "ploc" curto com o tom subindo, como bolha na água
+        var plops = new float[n];
+        t = 0;
+        while (true) {
+            t += -Math.Log(1 - r.NextDouble()) * Rate / 9.0;
+            int p = (int)t; if (p >= n) break;
+            double f0 = 900 + r.NextDouble() * 2100, amp = 0.3 + Math.Pow(r.NextDouble(), 3) * 0.7, ph = 0;
+            int len = (int)(Rate * (0.012 + r.NextDouble() * 0.025));
+            for (int s = 0; s < len && p + s < n; s++) {
+                double q = (double)s / len, f = f0 * (1 + 0.6 * q);
+                ph += 2 * Math.PI * f / Rate;
+                plops[p + s] += (float)(amp * Math.Exp(-4.5 * q) * Math.Min(1, s / (Rate * 0.001)) * Math.Sin(ph));
+            }
+        }
+
+        // 4) trovões distantes a cada 25-50 s: ronco grave que rola por 6-12 s
+        var thunder = new float[n];
+        int fade = Rate * 4;
+        double tt = Rate * (6 + r.NextDouble() * 10);
+        while (tt < n - fade - Rate * 14) {
+            Thunder(r, thunder, (int)tt);
+            tt += Rate * (25 + r.NextDouble() * 25);
+        }
+
+        Normalize(bed, 0.030); Normalize(patter, 0.045); Normalize(plops, 0.012);
+        var x = new float[n];
+        for (int i = 0; i < n; i++) x[i] = bed[i] + patter[i] + plops[i] + thunder[i];
         return x;
+    }
+
+    static void Thunder(Random r, float[] x, int start) {
+        double dur = 6 + r.NextDouble() * 6; int n = (int)(Rate * dur);
+        if (start + n > x.Length) n = x.Length - start;
+        var rumble = Brown(r, n); LowPass(rumble, 180); LowPass(rumble, 180);
+        var grit = Brown(r, n); LowPass(grit, 700); HighPass(grit, 120);
+        Normalize(rumble, 1.0); Normalize(grit, 1.0);
+        // várias "ondas" de estrondo nos primeiros segundos, cada uma decaindo
+        int bursts = 3 + r.Next(3);
+        var off = new double[bursts]; var amp = new double[bursts]; var dec = new double[bursts];
+        for (int b = 0; b < bursts; b++) {
+            off[b] = b == 0 ? 0 : r.NextDouble() * dur * 0.45;
+            amp[b] = b == 0 ? 1 : 0.4 + r.NextDouble() * 0.6;
+            dec[b] = 0.8 + r.NextDouble() * 1.6;
+        }
+        double level = 0.13 + r.NextDouble() * 0.09;   // trovão longe, não assusta
+        for (int s = 0; s < n; s++) {
+            double sec = (double)s / Rate, env = 0;
+            for (int b = 0; b < bursts; b++) {
+                double d = sec - off[b];
+                if (d > 0) env += amp[b] * Math.Min(1, d / 0.35) * Math.Exp(-d / dec[b]);
+            }
+            env *= Math.Min(1, (dur - sec) / 1.5);   // some devagar no fim
+            x[start + s] += (float)(level * env * (rumble[s] * 0.85 + grit[s] * 0.25));
+        }
     }
 
     // Mar: ondas de 7 a 12 s que sobem devagar, quebram e recuam
@@ -203,7 +271,7 @@ public static class PomoAmbient {
         var piano = Piano(r);                      // ~100 s de piano...
         int n = piano.Length * 2;                  // ...seguidos de ~100 s só de natureza, como no jogo
         var wind = Wind(r, n); var birds = Birds(r, n);
-        Normalize(wind, 0.10); Normalize(piano, 0.09);
+        Normalize(wind, 0.035); Normalize(piano, 0.09);   // vento só de fundo
         var x = new float[n];
         for (int i = 0; i < n; i++) x[i] = wind[i] + birds[i] + (i < piano.Length ? piano[i] : 0);
         return x;
@@ -228,7 +296,7 @@ public static class PomoAmbient {
             double input = r.NextDouble() * 2 - 1;
             double high = input - low - 1.1 * band;
             band += f1 * high; low += f1 * band;
-            x[i] = (float)(band * (0.25 + 0.75 * gust) + rumble[i] * 1.5);
+            x[i] = (float)(band * (0.25 + 0.75 * gust) + rumble[i] * 0.6);
         }
         return x;
     }
@@ -344,7 +412,7 @@ if (-not $createdNew) { return }
 $cfgDir  = Join-Path $env:APPDATA 'PomodoroOverlay'
 $cfgFile = Join-Path $cfgDir 'config.json'
 $cfg = [ordered]@{ FocusMin = 25; ShortMin = 5; LongMin = 15; X = $null; Y = $null; Visible = $true; Docked = $true; Alarm = $true; TickTock = $true
-                  Ambient = $null; Volume = 35 }
+                  Ambient = $null; Volume = 35; KeepAwake = $false }
 if (Test-Path $cfgFile) {
     try {
         $saved = Get-Content $cfgFile -Raw | ConvertFrom-Json
@@ -439,10 +507,128 @@ function Switch-Timer {
 $Ambients = [ordered]@{
     'Nenhum' = 'Nenhum'; 'TicTac' = 'Tic-tac'
     'Minecraft' = 'Minecraft (savana: vento, pássaros e piano)'; 'Chuva' = 'Chuva'; 'Marrom' = 'Ruído marrom'; 'Mar' = 'Mar'
+    'ClaudeFM' = 'Claude FM (lo-fi)'
+}
+
+# ---------- Claude FM: a rádio lo-fi da Anthropic (live do YouTube, a mesma do /radio do Claude Code) ----------
+# Toca dentro do Pomodoro com o player oficial do YouTube, numa janela WebView2 (motor do Edge,
+# já instalado no Windows) posicionada fora da tela. As DLLs do WebView2 ficam em lib\.
+# clau.de/radio sempre redireciona para a live atual (o link da live muda quando ela reinicia).
+$ClaudeFmUrl = 'https://clau.de/radio'
+$LibDir = Join-Path $PSScriptRoot 'lib'
+$FM = @{ Stage = 0; Form = $null; WV = $null; Task = $null; Env = $null; Sent = ''; Failed = $false }
+# Stage: 0 = parado, 1 = criando ambiente, 2 = criando o navegador, 3 = pronto para comandos
+
+$ClaudeFmPage = @'
+<!doctype html><html><body style="margin:0;background:#000"><div id="p"></div>
+<script>
+var player, ready = false, want = { play: false, vol: 35 }, wasPaused = false;
+var tag = document.createElement('script'); tag.src = 'https://www.youtube.com/iframe_api'; document.head.appendChild(tag);
+function onYouTubeIframeAPIReady() {
+  player = new YT.Player('p', { width: 320, height: 180, videoId: '__VID__',
+    playerVars: { autoplay: 0, controls: 0, playsinline: 1 },
+    events: { onReady: function () { ready = true; apply(); },
+              onError: function (e) { chrome.webview.postMessage('error:' + e.data); } } });
+}
+function apply() {
+  if (!ready) return;
+  player.setVolume(want.vol);
+  var st = player.getPlayerState();
+  if (want.play) {
+    if (st !== 1 && st !== 3) {
+      if (wasPaused) { player.seekTo(player.getDuration(), true); wasPaused = false; }   // volta ao "ao vivo"
+      player.playVideo();
+    }
+  } else if (st === 1 || st === 3) { player.pauseVideo(); wasPaused = true; }
+}
+function setWant(play, vol) { want.play = play; want.vol = vol; apply(); return 'ok'; }
+setInterval(apply, 2000);   // insiste até tocar (o player às vezes ignora o primeiro play)
+</script></body></html>
+'@
+
+function Get-ClaudeFmVideoId {
+    $req = [Net.HttpWebRequest]::Create($ClaudeFmUrl); $req.AllowAutoRedirect = $false; $req.Timeout = 10000
+    $resp = $req.GetResponse()
+    try { $loc = $resp.Headers['Location'] } finally { $resp.Close() }
+    if ($loc -match '[?&]v=([\w-]{11})') { return $Matches[1] }
+    throw "link inesperado: $loc"
+}
+
+function Stop-ClaudeFM([string]$why) {
+    if ($FM.Form) { try { $FM.Form.Dispose() } catch {} }
+    $FM.Stage = 0; $FM.Form = $null; $FM.WV = $null; $FM.Task = $null; $FM.Sent = ''
+    if ($why) {
+        $FM.Failed = $true
+        $tray.ShowBalloonTip(8000, 'Pomodoro', "Não consegui tocar o Claude FM: $why. Escolha o Claude FM de novo para tentar outra vez.", [Windows.Forms.ToolTipIcon]::Warning)
+    }
+}
+
+function Start-ClaudeFM {
+    try {
+        Add-Type -Path (Join-Path $LibDir 'Microsoft.Web.WebView2.Core.dll')
+        Add-Type -Path (Join-Path $LibDir 'Microsoft.Web.WebView2.WinForms.dll')
+    } catch { Stop-ClaudeFM 'faltam os arquivos do WebView2 na pasta lib'; return }
+    try { $vid = Get-ClaudeFmVideoId } catch { Stop-ClaudeFM 'sem acesso ao link da rádio (internet ou rede bloqueando)'; return }
+
+    $site = Join-Path $cfgDir 'claudefm'
+    New-Item -ItemType Directory -Force $site | Out-Null
+    $ClaudeFmPage.Replace('__VID__', $vid) | Set-Content (Join-Path $site 'index.html') -Encoding UTF8
+
+    # Janela fora da tela (precisa existir para o player tocar), fora do Alt+Tab
+    $f = New-Object Windows.Forms.Form
+    $f.FormBorderStyle = 'None'; $f.ShowInTaskbar = $false; $f.StartPosition = 'Manual'
+    $f.Location = New-Object Drawing.Point(-32000, -32000); $f.Size = New-Object Drawing.Size(320, 180)
+    $wv = New-Object Microsoft.Web.WebView2.WinForms.WebView2
+    $wv.Dock = 'Fill'; $f.Controls.Add($wv)
+    $f.Show()
+    $ex = [PomoNative]::GetWindowLong($f.Handle, -20)
+    [void][PomoNative]::SetWindowLong($f.Handle, -20, (($ex -bor 0x80) -band (-bnot 0x40000)))
+    $FM.Form = $f; $FM.WV = $wv
+
+    # O construtor das opções só tem parâmetros opcionais, que o PowerShell 5.1 não preenche sozinho
+    $ctor = [Microsoft.Web.WebView2.Core.CoreWebView2EnvironmentOptions].GetConstructors() |
+            Sort-Object { $_.GetParameters().Count } | Select-Object -First 1
+    $opts = $ctor.Invoke(@($ctor.GetParameters() | ForEach-Object { $_.DefaultValue }))
+    $opts.AdditionalBrowserArguments = '--autoplay-policy=no-user-gesture-required'
+    $FM.Task = [Microsoft.Web.WebView2.Core.CoreWebView2Environment]::CreateAsync($null, (Join-Path $cfgDir 'webview2'), $opts)
+    $FM.Stage = 1
+}
+
+# Avança a criação sem travar a tela (chamado a cada tick)
+function Step-ClaudeFM {
+    if ($FM.Stage -in 1, 2 -and $FM.Task.IsCompleted) {
+        if ($FM.Task.IsFaulted) { Stop-ClaudeFM 'o WebView2 não abriu'; return }
+        if ($FM.Stage -eq 1) {
+            $FM.Task = $FM.WV.EnsureCoreWebView2Async($FM.Task.Result)
+            $FM.Stage = 2
+        } else {
+            $core = $FM.WV.CoreWebView2
+            $core.SetVirtualHostNameToFolderMapping('pomodoro.local', (Join-Path $cfgDir 'claudefm'),
+                [Microsoft.Web.WebView2.Core.CoreWebView2HostResourceAccessKind]::Allow)
+            $core.add_WebMessageReceived({
+                param($sender, $e)
+                $msg = $e.TryGetWebMessageAsString()
+                if ($msg -like 'error:*') { Stop-ClaudeFM "o YouTube recusou a live (código $($msg.Substring(6)))" }
+            })
+            $core.Navigate('https://pomodoro.local/index.html')
+            $FM.Stage = 3; $FM.Sent = ''
+        }
+    }
+}
+
+function Set-ClaudeFM([bool]$play) {
+    if ($play -and $FM.Stage -eq 0 -and -not $FM.Failed) { Start-ClaudeFM }
+    Step-ClaudeFM
+    if ($FM.Stage -ne 3) { return }
+    $key = "$play|$([int]$cfg.Volume)"
+    if ($key -ne $FM.Sent) {
+        [void]$FM.WV.CoreWebView2.ExecuteScriptAsync("setWant($($play.ToString().ToLower()), $([int]$cfg.Volume))")
+        $FM.Sent = $key
+    }
 }
 $GeneratedSounds = @('Minecraft', 'Chuva', 'Marrom', 'Mar')
 $SoundDir = Join-Path $cfgDir 'sons'
-$SoundVersion = 'v2'   # mudar quando a síntese mudar, para regerar os arquivos
+$SoundVersion = 'v4'   # mudar quando a síntese mudar, para regerar os arquivos
 if (-not $Ambients.Contains([string]$cfg.Ambient)) { $cfg.Ambient = 'TicTac' }   # ex.: rádios, que saíram
 
 $wmp = $null
@@ -468,10 +654,13 @@ function Get-AmbientSource([string]$id) {
 }
 
 function Update-Ambient {
-    if ($null -eq $wmp) { return }
     $id = [string]$cfg.Ambient
     $now = [datetime]::Now
-    $want = ($S.Running -or $now -lt $S.PreviewUntil) -and $now -ge $S.MuteUntil -and ($GeneratedSounds -contains $id)
+    $active = ($S.Running -or $now -lt $S.PreviewUntil) -and $now -ge $S.MuteUntil
+    Set-ClaudeFM ($active -and $id -eq 'ClaudeFM')
+
+    if ($null -eq $wmp) { return }
+    $want = $active -and ($GeneratedSounds -contains $id)
 
     if (-not $want) {
         if ($S.AmbPlaying) { $wmp.controls.pause(); $S.AmbPlaying = $false }
@@ -493,7 +682,9 @@ function Set-Ambient([string]$id) {
     $S.AmbPlaying = $false; $S.AmbSrc = ''
     if ($GeneratedSounds -contains $id) { [void](Get-AmbientSource $id) }
     # Pausado: toca uma amostra curta para a pessoa ouvir o que escolheu
-    if (-not $S.Running) { $S.PreviewUntil = [datetime]::Now.AddSeconds(5) }
+    # (o Claude FM leva uns 5-8 s para conectar, então a amostra dele é maior)
+    $FM.Failed = $false
+    if (-not $S.Running) { $S.PreviewUntil = [datetime]::Now.AddSeconds($(if ($id -eq 'ClaudeFM') { 15 } else { 5 })) }
     Sync-AmbientChecks; Save-Config; Update-Ambient
 }
 
@@ -570,7 +761,8 @@ function Update-View {
     $miToggle.Text = if ($S.Running) { 'Pausar' } else { 'Iniciar' }
     $miStatus.Text = "$($S.Phase) · $txt · $($S.Done) pomodoro(s) hoje"
     $paused = if ($S.Running) { '' } else { ' (pausado)' }
-    $tray.Text = "Pomodoro · $($S.Phase) $txt$paused"
+    $awake = if ($cfg.KeepAwake) { ' · Cafeína' } else { '' }
+    $tray.Text = "Pomodoro · $($S.Phase) $txt$paused$awake"
 
     $total = (Get-PhaseLength $S.Phase).TotalSeconds
     $frac = if ($total -gt 0) { [math]::Min(1, $rem.TotalSeconds / $total) } else { 0 }
@@ -775,7 +967,7 @@ $miAlarm.add_Click({ $cfg.Alarm = $miAlarm.Checked; Save-Config })
 
 $miAmb = New-Object Windows.Forms.ToolStripMenuItem('Som de fundo')
 foreach ($k in $Ambients.Keys) {
-    if ($k -eq 'Minecraft') { [void]$miAmb.DropDownItems.Add((New-Object Windows.Forms.ToolStripSeparator)) }
+    if ($k -in 'Minecraft', 'ClaudeFM') { [void]$miAmb.DropDownItems.Add((New-Object Windows.Forms.ToolStripSeparator)) }
     $it = New-Object Windows.Forms.ToolStripMenuItem($Ambients[$k])
     $it.Tag = $k
     $it.add_Click({ param($sender, $e) Set-Ambient $sender.Tag })
@@ -797,8 +989,8 @@ foreach ($v in @(@('Baixo', 15), @('Médio', 35), @('Alto', 60), @('Máximo', 10
 }
 Add-SmartDropDown $miVol
 [void]$miAmb.DropDownItems.Add($miVol)
-if ($null -eq $wmp) {   # sem Windows Media Player: só tic-tac funciona
-    foreach ($o in $miAmb.DropDownItems) { if ($o.Tag -is [string] -and $o.Tag -notin 'Nenhum', 'TicTac') { $o.Enabled = $false } }
+if ($null -eq $wmp) {   # sem Windows Media Player: os sons gerados não tocam
+    foreach ($o in $miAmb.DropDownItems) { if ($o.Tag -is [string] -and $o.Tag -in $GeneratedSounds) { $o.Enabled = $false } }
     $miVol.Enabled = $false
 }
 Add-SmartDropDown $miAmb
@@ -813,11 +1005,41 @@ $miDock = $menu.Items.Add('Fixar na barra de tarefas')
 $miDock.CheckOnClick = $true; $miDock.Checked = [bool]$cfg.Docked
 $miDock.add_Click({ Set-Layout; Save-Config })
 Add-Sep
+
+# ---------- Cafeína: manter o PC ativo (como o app Caffeine) ----------
+# 1) Pede ao Windows para não dormir nem apagar a tela.
+# 2) Com 1 min sem uso, "aperta" F15 (tecla que não faz nada) para não bloquear a tela
+#    nem ficar "Ausente" no Teams. Enquanto a pessoa usa o PC, nenhuma tecla é enviada.
+$ES_CONTINUOUS = [uint32]'0x80000000'; $ES_SYSTEM = [uint32]1; $ES_DISPLAY = [uint32]2
+$S.LastNudge = [datetime]::MinValue
+
+function Set-KeepAwake([bool]$on) {
+    $cfg.KeepAwake = $on
+    $flags = if ($on) { $ES_CONTINUOUS -bor $ES_SYSTEM -bor $ES_DISPLAY } else { $ES_CONTINUOUS }
+    [void][PomoNative]::SetThreadExecutionState($flags)
+    $miCaffeine.Checked = $on
+    Update-View
+}
+
+function Invoke-KeepAwakeNudge {
+    if (-not $cfg.KeepAwake) { return }
+    if ([PomoNative]::IdleMs() -ge 59000 -and ([datetime]::Now - $S.LastNudge).TotalSeconds -ge 59) {
+        [PomoNative]::keybd_event(0x7E, 0, 0, [UIntPtr]::Zero)   # F15 desce
+        [PomoNative]::keybd_event(0x7E, 0, 2, [UIntPtr]::Zero)   # F15 sobe
+        $S.LastNudge = [datetime]::Now
+    }
+}
+
+$miCaffeine = $menu.Items.Add('Cafeína')
+$miCaffeine.add_Click({ Set-KeepAwake (-not $cfg.KeepAwake); Save-Config })
+Add-Sep
 $miExit = $menu.Items.Add('Sair')
 $miExit.add_Click({
     Save-Config
     $timer.Stop(); $tickTimer.Stop()
     if ($null -ne $wmp) { $wmp.controls.stop() }
+    Stop-ClaudeFM
+    [void][PomoNative]::SetThreadExecutionState($ES_CONTINUOUS)   # devolve o controle do sono ao Windows
     $hotkey.Release()
     $tray.Visible = $false
     $tray.Dispose()
@@ -923,6 +1145,7 @@ $timer.add_Tick({
     if ($S.DockedNow -and $S.Tick % 4 -eq 0) { Update-Dock }   # acompanha mudanças nos ícones/tema
     Update-Visibility
     Update-Ambient
+    Invoke-KeepAwakeNudge
     Update-View
 })
 
@@ -931,6 +1154,7 @@ $tickTimer = New-Object Windows.Forms.Timer
 $tickTimer.Interval = 50
 $tickTimer.add_Tick({ Invoke-TickTock })
 
+Set-KeepAwake ([bool]$cfg.KeepAwake)
 $form.Show(); $S.Shown = $true
 Update-Visibility
 $timer.Start()
