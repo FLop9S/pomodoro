@@ -14,7 +14,7 @@ A linha colorida indica a fase: vermelho = foco, verde = pausa, azul = pausa lon
 
 ### Som de fundo
 
-Toca só enquanto o timer está rodando (pausa junto com ele e fica mudo durante o alarme). Escolha em **Som de fundo** no menu; com o timer pausado, a escolha toca uma amostra de 5 segundos.
+Toca só durante o foco, com o timer rodando: pausa junto com ele, fica mudo durante o alarme e, nas pausas (curta e longa), tudo fica em silêncio, inclusive o tic-tac. O alarme do fim da pausa continua tocando. Escolha em **Som de fundo** no menu; com o timer pausado, a escolha toca uma amostra de 5 segundos.
 
 | Opção | O que é |
 |---|---|
@@ -42,6 +42,17 @@ Outros comportamentos:
 - não aparece no Alt+Tab;
 - some quando há algo em tela cheia (vídeo, apresentação);
 - se `Ctrl+Alt+P` já estiver em uso por outro programa, o atalho vira `Ctrl+Alt+Shift+P`.
+
+### Sem distrações no foco
+
+Ligado por padrão. Enquanto o timer roda na fase de foco:
+
+- liga o **Não incomodar** do Windows (as notificações do Teams, Outlook etc. vão direto para a central, sem banner);
+- esconde os contadores dos apps na barra de tarefas (ex.: mensagens não lidas) e o piscar dos ícones pedindo atenção, as mesmas opções da sessão de foco do Windows.
+
+Nas pausas, com o timer parado ou ao sair do Pomodoro, tudo volta como estava (se você já tinha ligado o Não incomodar por conta própria, ele continua ligado). Desliga em **Sem distrações no foco** no menu.
+
+Como o Windows não libera uma API pública para o Não incomodar, o Pomodoro usa o próprio botão da central de notificações: ao começar e ao terminar o foco, o painel abre e fecha sozinho por cerca de 1 segundo.
 
 ### Cafeína
 

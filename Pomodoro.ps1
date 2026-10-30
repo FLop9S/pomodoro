@@ -29,6 +29,10 @@ public static class PomoNative {
     [DllImport("user32.dll")] public static extern void keybd_event(byte vk, byte scan, uint flags, UIntPtr extra);
     [StructLayout(LayoutKind.Sequential)] struct LASTINPUTINFO { public uint cbSize; public uint dwTime; }
     [DllImport("user32.dll")] static extern bool GetLastInputInfo(ref LASTINPUTINFO lii);
+    // Avisa o Explorer que as configurações da barra mudaram (o mesmo que o app Configurações faz)
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    static extern IntPtr SendMessageTimeout(IntPtr h, uint msg, UIntPtr w, string l, uint flags, uint timeout, out UIntPtr result);
+    public static void NotifyTraySettings() { UIntPtr r; SendMessageTimeout((IntPtr)0xffff, 0x001A, UIntPtr.Zero, "TraySettings", 2, 2000, out r); }
     public static uint IdleMs() {
         var lii = new LASTINPUTINFO(); lii.cbSize = (uint)Marshal.SizeOf(lii);
         return GetLastInputInfo(ref lii) ? (uint)Environment.TickCount - lii.dwTime : 0;
@@ -412,7 +416,8 @@ if (-not $createdNew) { return }
 $cfgDir  = Join-Path $env:APPDATA 'PomodoroOverlay'
 $cfgFile = Join-Path $cfgDir 'config.json'
 $cfg = [ordered]@{ FocusMin = 25; ShortMin = 5; LongMin = 15; X = $null; Y = $null; Visible = $true; Docked = $true; Alarm = $true; TickTock = $true
-                  Ambient = $null; Volume = 35; KeepAwake = $false }
+                  Ambient = $null; Volume = 35; KeepAwake = $false
+                  FocusQuiet = $true; QuietApplied = $false; OrigBadges = 1; OrigFlashing = 1; DndByUs = $false }
 if (Test-Path $cfgFile) {
     try {
         $saved = Get-Content $cfgFile -Raw | ConvertFrom-Json
@@ -470,7 +475,7 @@ function Invoke-TickTock {
     $sec = [int][math]::Ceiling((Get-Remaining).TotalSeconds)
     if ($sec -eq $S.LastSec) { return }
     $S.LastSec = $sec
-    if ($cfg.Ambient -eq 'TicTac' -and $sec -gt 0 -and [datetime]::Now -ge $S.MuteUntil) {
+    if ($cfg.Ambient -eq 'TicTac' -and $S.Phase -eq 'Foco' -and $sec -gt 0 -and [datetime]::Now -ge $S.MuteUntil) {
         if ($sec % 2 -eq 0) { $SndTick.Play() } else { $SndTock.Play() }
     }
 }
@@ -656,7 +661,8 @@ function Get-AmbientSource([string]$id) {
 function Update-Ambient {
     $id = [string]$cfg.Ambient
     $now = [datetime]::Now
-    $active = ($S.Running -or $now -lt $S.PreviewUntil) -and $now -ge $S.MuteUntil
+    # Só no foco: nas pausas fica tudo em silêncio (a amostra ao escolher um som toca sempre)
+    $active = (($S.Running -and $S.Phase -eq 'Foco') -or $now -lt $S.PreviewUntil) -and $now -ge $S.MuteUntil
     Set-ClaudeFM ($active -and $id -eq 'ClaudeFM')
 
     if ($null -eq $wmp) { return }
@@ -714,6 +720,8 @@ function Start-NextPhase([bool]$fromTimer) {
     $run = if ($fromTimer) { $false } else { $S.Running }
     $S.Running = $run
     if ($run) { $S.EndAt = [datetime]::Now + $S.Remaining }
+    # Desliga o "Não incomodar" ANTES do aviso de fim de fase, senão o próprio aviso fica escondido
+    Update-FocusQuiet
 
     if ($fromTimer) {
         $min = [int]$S.Remaining.TotalMinutes
@@ -1032,6 +1040,95 @@ function Invoke-KeepAwakeNudge {
 
 $miCaffeine = $menu.Items.Add('Cafeína')
 $miCaffeine.add_Click({ Set-KeepAwake (-not $cfg.KeepAwake); Save-Config })
+
+# ---------- Sem distrações no foco ----------
+# Durante o foco (timer rodando), esconde os contadores dos apps na barra (ex.: mensagens não lidas
+# do Teams/Outlook) e o piscar de ícones pedindo atenção, como as opções da sessão de foco do Windows.
+# Nas pausas, com o timer parado ou ao sair, volta como estava. Os valores originais ficam salvos na
+# config para serem restaurados mesmo se o Pomodoro for fechado à força.
+$TaskbarKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'
+$S.QuietOn = $false
+
+# "Não incomodar" do Windows. Não há API pública liberada (a de sessão de foco é restrita pela
+# Microsoft), então o Pomodoro usa o próprio botão da central de notificações: abre o painel (Win+N),
+# acha o botão pelo ID "DoNotDisturbButton" via UI Automation, liga/desliga e fecha (Esc).
+# O painel pisca na tela por ~1 s. Retorna o estado anterior ('On'/'Off') ou $null se não achou.
+function Set-WindowsDnd([bool]$on) {
+    try { Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes } catch { return $null }
+    $A = [Windows.Automation.AutomationElement]
+    $press = { param([byte[]]$keys)
+        foreach ($k in $keys) { [PomoNative]::keybd_event($k, 0, 0, [UIntPtr]::Zero) }
+        [array]::Reverse($keys); foreach ($k in $keys) { [PomoNative]::keybd_event($k, 0, 2, [UIntPtr]::Zero) } }
+    # Espera soltar Ctrl/Alt/Shift (ex.: logo depois do Ctrl+Alt+P), senão o Win+N vira outro atalho
+    $sw = [Diagnostics.Stopwatch]::StartNew()
+    while ([Windows.Forms.Control]::ModifierKeys -ne 'None' -and $sw.ElapsedMilliseconds -lt 2000) { Start-Sleep -Milliseconds 50 }
+    & $press @(0x5B, 0x4E)   # Win+N
+    $btn = $null; $sw = [Diagnostics.Stopwatch]::StartNew()
+    while (-not $btn -and $sw.ElapsedMilliseconds -lt 4000) {
+        Start-Sleep -Milliseconds 150
+        try {
+            $f = $A::FocusedElement
+            if ($f -and (Get-Process -Id $f.Current.ProcessId).Name -eq 'ShellExperienceHost') {
+                $walker = [Windows.Automation.TreeWalker]::ControlViewWalker
+                $top = $f; $p = $walker.GetParent($top)
+                while ($p -and -not $p.Equals($A::RootElement)) { $top = $p; $p = $walker.GetParent($top) }
+                $btn = $top.FindFirst([Windows.Automation.TreeScope]::Descendants,
+                    (New-Object Windows.Automation.PropertyCondition($A::AutomationIdProperty, 'DoNotDisturbButton')))
+            }
+        } catch {}
+    }
+    $before = $null
+    if ($btn) {
+        try {
+            $tp = $btn.GetCurrentPattern([Windows.Automation.TogglePattern]::Pattern)
+            $before = [string]$tp.Current.ToggleState
+            if (($before -eq 'On') -ne $on) { $tp.Toggle(); Start-Sleep -Milliseconds 250 }
+        } catch {}
+    }
+    & $press @(0x1B)         # Esc fecha o painel
+    return $before
+}
+
+function Set-FocusQuiet([bool]$on) {
+    # Não perturbe: liga no foco; no fim só desliga se foi o Pomodoro que ligou
+    if ($on -and -not $cfg.DndByUs) {
+        $before = Set-WindowsDnd $true
+        if ($before -eq 'Off') { $cfg.DndByUs = $true; Save-Config }
+    } elseif (-not $on -and $cfg.DndByUs) {
+        [void](Set-WindowsDnd $false)
+        $cfg.DndByUs = $false; Save-Config
+    }
+    try {
+        if ($on) {
+            if (-not $cfg.QuietApplied) {
+                $cur = Get-ItemProperty $TaskbarKey
+                $cfg.OrigBadges   = if ($null -ne $cur.TaskbarBadges)   { [int]$cur.TaskbarBadges }   else { 1 }
+                $cfg.OrigFlashing = if ($null -ne $cur.TaskbarFlashing) { [int]$cur.TaskbarFlashing } else { 1 }
+                $cfg.QuietApplied = $true
+                Save-Config
+            }
+            Set-ItemProperty $TaskbarKey -Name TaskbarBadges -Value 0 -Type DWord
+            Set-ItemProperty $TaskbarKey -Name TaskbarFlashing -Value 0 -Type DWord
+        } elseif ($cfg.QuietApplied) {
+            Set-ItemProperty $TaskbarKey -Name TaskbarBadges -Value ([int]$cfg.OrigBadges) -Type DWord
+            Set-ItemProperty $TaskbarKey -Name TaskbarFlashing -Value ([int]$cfg.OrigFlashing) -Type DWord
+            $cfg.QuietApplied = $false
+            Save-Config
+        }
+        [PomoNative]::NotifyTraySettings()
+    } catch {}
+    $S.QuietOn = $on
+}
+
+function Update-FocusQuiet {
+    $want = [bool]$cfg.FocusQuiet -and $S.Running -and $S.Phase -eq 'Foco'
+    if ($want -ne $S.QuietOn) { Set-FocusQuiet $want }
+}
+
+$miQuiet = $menu.Items.Add('Sem distrações no foco')
+$miQuiet.CheckOnClick = $true; $miQuiet.Checked = [bool]$cfg.FocusQuiet
+$miQuiet.ToolTipText = 'Durante o foco: liga o Não incomodar do Windows e esconde contadores e o piscar dos apps na barra'
+$miQuiet.add_Click({ $cfg.FocusQuiet = $miQuiet.Checked; Save-Config; Update-FocusQuiet })
 Add-Sep
 $miExit = $menu.Items.Add('Sair')
 $miExit.add_Click({
@@ -1039,6 +1136,7 @@ $miExit.add_Click({
     $timer.Stop(); $tickTimer.Stop()
     if ($null -ne $wmp) { $wmp.controls.stop() }
     Stop-ClaudeFM
+    Set-FocusQuiet $false   # devolve contadores e piscar da barra
     [void][PomoNative]::SetThreadExecutionState($ES_CONTINUOUS)   # devolve o controle do sono ao Windows
     $hotkey.Release()
     $tray.Visible = $false
@@ -1145,6 +1243,7 @@ $timer.add_Tick({
     if ($S.DockedNow -and $S.Tick % 4 -eq 0) { Update-Dock }   # acompanha mudanças nos ícones/tema
     Update-Visibility
     Update-Ambient
+    Update-FocusQuiet
     Invoke-KeepAwakeNudge
     Update-View
 })
@@ -1155,6 +1254,7 @@ $tickTimer.Interval = 50
 $tickTimer.add_Tick({ Invoke-TickTock })
 
 Set-KeepAwake ([bool]$cfg.KeepAwake)
+if ($cfg.QuietApplied -or $cfg.DndByUs) { Set-FocusQuiet $false }   # o Pomodoro foi fechado à força no meio de um foco
 $form.Show(); $S.Shown = $true
 Update-Visibility
 $timer.Start()
