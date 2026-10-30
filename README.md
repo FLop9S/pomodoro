@@ -45,9 +45,14 @@ Outros comportamentos:
 
 ### Sem distrações no foco
 
-Ligado por padrão. Enquanto o timer roda na fase de foco, esconde os contadores dos apps na barra de tarefas (ex.: mensagens não lidas do Teams e Outlook) e o piscar dos ícones pedindo atenção, as mesmas duas opções da sessão de foco do Windows. Nas pausas, com o timer parado ou ao sair do Pomodoro, a barra volta como estava. Desliga em **Sem distrações no foco** no menu.
+Ligado por padrão. Enquanto o timer roda na fase de foco:
 
-Não dá para ligar o "Não perturbe" do Windows por aqui: a API oficial de sessão de foco só é liberada pela Microsoft para apps autorizados. As notificações (banners) continuam aparecendo.
+- liga o **Não incomodar** do Windows (as notificações do Teams, Outlook etc. vão direto para a central, sem banner);
+- esconde os contadores dos apps na barra de tarefas (ex.: mensagens não lidas) e o piscar dos ícones pedindo atenção, as mesmas opções da sessão de foco do Windows.
+
+Nas pausas, com o timer parado ou ao sair do Pomodoro, tudo volta como estava (se você já tinha ligado o Não incomodar por conta própria, ele continua ligado). Desliga em **Sem distrações no foco** no menu.
+
+Como o Windows não libera uma API pública para o Não incomodar, o Pomodoro usa o próprio botão da central de notificações: ao começar e ao terminar o foco, o painel abre e fecha sozinho por cerca de 1 segundo.
 
 ### Cafeína
 
