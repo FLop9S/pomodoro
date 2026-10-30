@@ -43,6 +43,12 @@ Outros comportamentos:
 - some quando há algo em tela cheia (vídeo, apresentação);
 - se `Ctrl+Alt+P` já estiver em uso por outro programa, o atalho vira `Ctrl+Alt+Shift+P`.
 
+### Sem distrações no foco
+
+Ligado por padrão. Enquanto o timer roda na fase de foco, esconde os contadores dos apps na barra de tarefas (ex.: mensagens não lidas do Teams e Outlook) e o piscar dos ícones pedindo atenção, as mesmas duas opções da sessão de foco do Windows. Nas pausas, com o timer parado ou ao sair do Pomodoro, a barra volta como estava. Desliga em **Sem distrações no foco** no menu.
+
+Não dá para ligar o "Não perturbe" do Windows por aqui: a API oficial de sessão de foco só é liberada pela Microsoft para apps autorizados. As notificações (banners) continuam aparecendo.
+
 ### Cafeína
 
 Faz o mesmo que o app Caffeine, sem precisar dele: pede ao Windows para não dormir nem apagar a tela e, depois de 1 minuto sem uso, "aperta" a tecla F15 (que não faz nada) uma vez por minuto. Enquanto você usa o PC, nenhuma tecla é enviada. Liga e desliga pelo menu; a escolha fica salva e, ligada, o ícone da bandeja mostra "Cafeína". Ao sair do Pomodoro, o Windows volta ao normal.
