@@ -25,7 +25,7 @@ Toca só durante o foco, com o timer rodando: pausa junto com ele, fica mudo dur
 | Ruído marrom, Mar | Sons gerados pelo próprio app, em loop sem emenda |
 | Claude FM | A rádio lo-fi 24/7 da Anthropic (a mesma do `/radio` do Claude Code). Toca dentro do Pomodoro, com o player oficial do YouTube numa janela escondida; segue o timer e o volume como os outros sons. Leva uns 10 s para conectar e precisa de internet com acesso ao YouTube |
 
-Os sons são criados na primeira vez que são escolhidos (menos de 1 segundo) e ficam em `%APPDATA%\PomodoroOverlay\sons`. O volume do som de fundo fica em **Som de fundo > Volume**. Só o Claude FM depende de internet.
+Os sons gerados são criados na primeira vez que são escolhidos (menos de 1 segundo) e ficam em `%APPDATA%\PomodoroOverlay\sons`. O volume do som de fundo fica em **Som de fundo > Volume**. Só as opções do YouTube (Claude FM e Música de estudo) dependem de internet.
 
 Pelo menu dá para:
 
@@ -38,6 +38,7 @@ Pelo menu dá para:
 - esconder o contador da tela.
 
 Outros comportamentos:
+| Música de estudo (ondas alfa) | O vídeo [Study Music Alpha Waves](https://www.youtube.com/watch?v=WPni755-Krg), do canal Yellow Brick Cinema (3 h, em loop). Usa o mesmo player do Claude FM; ao pausar e retomar, continua de onde parou. Pode ter anúncios do YouTube |
 
 - não aparece no Alt+Tab;
 - some quando há algo em tela cheia (vídeo, apresentação);
@@ -70,5 +71,5 @@ As configurações (durações, posição, modo) ficam em `%APPDATA%\PomodoroOve
 
 - Windows 10 ou 11 com Windows PowerShell 5.1 (já vem no sistema).
 - O modo "na barra de tarefas" funciona com a barra embaixo ou em cima da tela.
-- Sons de fundo (exceto tic-tac e Claude FM) usam o Windows Media Player, que vem com o Windows; sem ele, essas opções aparecem desativadas.
-- O Claude FM usa o WebView2 (motor do Edge, já instalado no Windows 10/11 atualizado). A pasta `lib` traz as 3 DLLs oficiais da Microsoft que o PowerShell precisa para usá-lo (pacote NuGet `Microsoft.Web.WebView2` 1.0.4258.31, assinadas pela Microsoft); mantenha `lib` junto do `Pomodoro.ps1`.
+- Sons de fundo gerados (Minecraft, Chuva, Ruído marrom, Mar) usam o Windows Media Player, que vem com o Windows; sem ele, essas opções aparecem desativadas.
+- O Claude FM e a Música de estudo usam o WebView2 (motor do Edge, já instalado no Windows 10/11 atualizado). A pasta `lib` traz as 3 DLLs oficiais da Microsoft que o PowerShell precisa para usá-lo (pacote NuGet `Microsoft.Web.WebView2` 1.0.4258.31, assinadas pela Microsoft); mantenha `lib` junto do `Pomodoro.ps1`.

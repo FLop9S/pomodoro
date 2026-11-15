@@ -512,22 +512,27 @@ function Switch-Timer {
 $Ambients = [ordered]@{
     'Nenhum' = 'Nenhum'; 'TicTac' = 'Tic-tac'
     'Minecraft' = 'Minecraft (savana: vento, pássaros e piano)'; 'Chuva' = 'Chuva'; 'Marrom' = 'Ruído marrom'; 'Mar' = 'Mar'
-    'ClaudeFM' = 'Claude FM (lo-fi)'
+    'ClaudeFM' = 'Claude FM (lo-fi)'; 'AlphaWaves' = 'Música de estudo (ondas alfa)'
 }
 
-# ---------- Claude FM: a rádio lo-fi da Anthropic (live do YouTube, a mesma do /radio do Claude Code) ----------
-# Toca dentro do Pomodoro com o player oficial do YouTube, numa janela WebView2 (motor do Edge,
+# ---------- Sons do YouTube: Claude FM e música de estudo ----------
+# Tocam dentro do Pomodoro com o player oficial do YouTube, numa janela WebView2 (motor do Edge,
 # já instalado no Windows) posicionada fora da tela. As DLLs do WebView2 ficam em lib\.
-# clau.de/radio sempre redireciona para a live atual (o link da live muda quando ela reinicia).
-$ClaudeFmUrl = 'https://clau.de/radio'
+# Claude FM: a rádio lo-fi da Anthropic (live, a mesma do /radio do Claude Code). clau.de/radio sempre
+# redireciona para a live atual (o link da live muda quando ela reinicia).
+# AlphaWaves: "Study Music Alpha Waves" do canal Yellow Brick Cinema (vídeo de 3 h, toca em loop).
+$YouTube = @{
+    'ClaudeFM'   = @{ Name = 'o Claude FM'; Live = $true; Url = 'https://clau.de/radio' }
+    'AlphaWaves' = @{ Name = 'a música de estudo'; Live = $false; Vid = 'WPni755-Krg' }
+}
 $LibDir = Join-Path $PSScriptRoot 'lib'
-$FM = @{ Stage = 0; Form = $null; WV = $null; Task = $null; Env = $null; Sent = ''; Failed = $false }
+$FM = @{ Stage = 0; Source = ''; Form = $null; WV = $null; Task = $null; Env = $null; Sent = ''; Failed = $false }
 # Stage: 0 = parado, 1 = criando ambiente, 2 = criando o navegador, 3 = pronto para comandos
 
-$ClaudeFmPage = @'
+$YouTubePage = @'
 <!doctype html><html><body style="margin:0;background:#000"><div id="p"></div>
 <script>
-var player, ready = false, want = { play: false, vol: 35 }, wasPaused = false;
+var LIVE = __LIVE__, player, ready = false, want = { play: false, vol: 35 }, wasPaused = false;
 var tag = document.createElement('script'); tag.src = 'https://www.youtube.com/iframe_api'; document.head.appendChild(tag);
 function onYouTubeIframeAPIReady() {
   player = new YT.Player('p', { width: 320, height: 180, videoId: '__VID__',
@@ -535,13 +540,16 @@ function onYouTubeIframeAPIReady() {
     events: { onReady: function () { ready = true; apply(); },
               onError: function (e) { chrome.webview.postMessage('error:' + e.data); } } });
 }
+              onStateChange: function (e) {   // vídeo comum: no fim, recomeça (loop)
+                if (e.data === 0 && !LIVE) { player.seekTo(0, true); if (want.play) player.playVideo(); } },
 function apply() {
   if (!ready) return;
   player.setVolume(want.vol);
   var st = player.getPlayerState();
   if (want.play) {
     if (st !== 1 && st !== 3) {
-      if (wasPaused) { player.seekTo(player.getDuration(), true); wasPaused = false; }   // volta ao "ao vivo"
+      if (wasPaused && LIVE) player.seekTo(player.getDuration(), true);   // live: volta ao "ao vivo"
+      wasPaused = false;                                                   // vídeo comum: continua de onde parou
       player.playVideo();
     }
   } else if (st === 1 || st === 3) { player.pauseVideo(); wasPaused = true; }
@@ -551,33 +559,38 @@ setInterval(apply, 2000);   // insiste até tocar (o player às vezes ignora o p
 </script></body></html>
 '@
 
-function Get-ClaudeFmVideoId {
-    $req = [Net.HttpWebRequest]::Create($ClaudeFmUrl); $req.AllowAutoRedirect = $false; $req.Timeout = 10000
+function Get-YouTubeVideoId([string]$id) {
+    $src = $YouTube[$id]
+    if ($src.Vid) { return $src.Vid }
+    $req = [Net.HttpWebRequest]::Create($src.Url); $req.AllowAutoRedirect = $false; $req.Timeout = 10000
     $resp = $req.GetResponse()
     try { $loc = $resp.Headers['Location'] } finally { $resp.Close() }
     if ($loc -match '[?&]v=([\w-]{11})') { return $Matches[1] }
     throw "link inesperado: $loc"
 }
 
-function Stop-ClaudeFM([string]$why) {
+function Stop-YouTube([string]$why) {
+    $name = if ($FM.Source) { $YouTube[$FM.Source].Name } else { 'o som' }
     if ($FM.Form) { try { $FM.Form.Dispose() } catch {} }
-    $FM.Stage = 0; $FM.Form = $null; $FM.WV = $null; $FM.Task = $null; $FM.Sent = ''
+    $FM.Stage = 0; $FM.Source = ''; $FM.Form = $null; $FM.WV = $null; $FM.Task = $null; $FM.Sent = ''
     if ($why) {
         $FM.Failed = $true
-        $tray.ShowBalloonTip(8000, 'Pomodoro', "Não consegui tocar o Claude FM: $why. Escolha o Claude FM de novo para tentar outra vez.", [Windows.Forms.ToolTipIcon]::Warning)
+        $tray.ShowBalloonTip(8000, 'Pomodoro', "Não consegui tocar $($name): $why. Escolha de novo no menu para tentar outra vez.", [Windows.Forms.ToolTipIcon]::Warning)
     }
 }
 
-function Start-ClaudeFM {
+function Start-YouTube([string]$id) {
+    $FM.Source = $id
     try {
         Add-Type -Path (Join-Path $LibDir 'Microsoft.Web.WebView2.Core.dll')
         Add-Type -Path (Join-Path $LibDir 'Microsoft.Web.WebView2.WinForms.dll')
-    } catch { Stop-ClaudeFM 'faltam os arquivos do WebView2 na pasta lib'; return }
-    try { $vid = Get-ClaudeFmVideoId } catch { Stop-ClaudeFM 'sem acesso ao link da rádio (internet ou rede bloqueando)'; return }
+    } catch { Stop-YouTube 'faltam os arquivos do WebView2 na pasta lib'; return }
+    try { $vid = Get-YouTubeVideoId $id } catch { Stop-YouTube 'sem acesso ao link da rádio (internet ou rede bloqueando)'; return }
 
-    $site = Join-Path $cfgDir 'claudefm'
+    $site = Join-Path $cfgDir 'youtube'
     New-Item -ItemType Directory -Force $site | Out-Null
-    $ClaudeFmPage.Replace('__VID__', $vid) | Set-Content (Join-Path $site 'index.html') -Encoding UTF8
+    $YouTubePage.Replace('__VID__', $vid).Replace('__LIVE__', $YouTube[$id].Live.ToString().ToLower()) |
+        Set-Content (Join-Path $site 'index.html') -Encoding UTF8
 
     # Janela fora da tela (precisa existir para o player tocar), fora do Alt+Tab
     $f = New-Object Windows.Forms.Form
@@ -600,20 +613,20 @@ function Start-ClaudeFM {
 }
 
 # Avança a criação sem travar a tela (chamado a cada tick)
-function Step-ClaudeFM {
+function Step-YouTube {
     if ($FM.Stage -in 1, 2 -and $FM.Task.IsCompleted) {
-        if ($FM.Task.IsFaulted) { Stop-ClaudeFM 'o WebView2 não abriu'; return }
+        if ($FM.Task.IsFaulted) { Stop-YouTube 'o WebView2 não abriu'; return }
         if ($FM.Stage -eq 1) {
             $FM.Task = $FM.WV.EnsureCoreWebView2Async($FM.Task.Result)
             $FM.Stage = 2
         } else {
             $core = $FM.WV.CoreWebView2
-            $core.SetVirtualHostNameToFolderMapping('pomodoro.local', (Join-Path $cfgDir 'claudefm'),
+            $core.SetVirtualHostNameToFolderMapping('pomodoro.local', (Join-Path $cfgDir 'youtube'),
                 [Microsoft.Web.WebView2.Core.CoreWebView2HostResourceAccessKind]::Allow)
             $core.add_WebMessageReceived({
                 param($sender, $e)
                 $msg = $e.TryGetWebMessageAsString()
-                if ($msg -like 'error:*') { Stop-ClaudeFM "o YouTube recusou a live (código $($msg.Substring(6)))" }
+                if ($msg -like 'error:*') { Stop-YouTube "o YouTube recusou o vídeo (código $($msg.Substring(6)))" }
             })
             $core.Navigate('https://pomodoro.local/index.html')
             $FM.Stage = 3; $FM.Sent = ''
@@ -621,9 +634,12 @@ function Step-ClaudeFM {
     }
 }
 
-function Set-ClaudeFM([bool]$play) {
-    if ($play -and $FM.Stage -eq 0 -and -not $FM.Failed) { Start-ClaudeFM }
-    Step-ClaudeFM
+# $id = fonte do YouTube que deve tocar agora ('' = nenhuma: o player pausa e continua carregado)
+function Set-YouTube([string]$id) {
+    $play = [bool]$id
+    if ($play -and $FM.Stage -ne 0 -and $FM.Source -ne $id) { Stop-YouTube }   # trocou de fonte: recria o player
+    if ($play -and $FM.Stage -eq 0 -and -not $FM.Failed) { Start-YouTube $id }
+    Step-YouTube
     if ($FM.Stage -ne 3) { return }
     $key = "$play|$([int]$cfg.Volume)"
     if ($key -ne $FM.Sent) {
@@ -663,7 +679,7 @@ function Update-Ambient {
     $now = [datetime]::Now
     # Só no foco: nas pausas fica tudo em silêncio (a amostra ao escolher um som toca sempre)
     $active = (($S.Running -and $S.Phase -eq 'Foco') -or $now -lt $S.PreviewUntil) -and $now -ge $S.MuteUntil
-    Set-ClaudeFM ($active -and $id -eq 'ClaudeFM')
+    Set-YouTube $(if ($active -and $YouTube.Contains($id)) { $id } else { '' })
 
     if ($null -eq $wmp) { return }
     $want = $active -and ($GeneratedSounds -contains $id)
@@ -688,9 +704,9 @@ function Set-Ambient([string]$id) {
     $S.AmbPlaying = $false; $S.AmbSrc = ''
     if ($GeneratedSounds -contains $id) { [void](Get-AmbientSource $id) }
     # Pausado: toca uma amostra curta para a pessoa ouvir o que escolheu
-    # (o Claude FM leva uns 5-8 s para conectar, então a amostra dele é maior)
+    # (os sons do YouTube levam uns 5-8 s para conectar, então a amostra deles é maior)
     $FM.Failed = $false
-    if (-not $S.Running) { $S.PreviewUntil = [datetime]::Now.AddSeconds($(if ($id -eq 'ClaudeFM') { 15 } else { 5 })) }
+    if (-not $S.Running) { $S.PreviewUntil = [datetime]::Now.AddSeconds($(if ($YouTube.Contains($id)) { 15 } else { 5 })) }
     Sync-AmbientChecks; Save-Config; Update-Ambient
 }
 
@@ -1135,7 +1151,7 @@ $miExit.add_Click({
     Save-Config
     $timer.Stop(); $tickTimer.Stop()
     if ($null -ne $wmp) { $wmp.controls.stop() }
-    Stop-ClaudeFM
+    Stop-YouTube
     Set-FocusQuiet $false   # devolve contadores e piscar da barra
     [void][PomoNative]::SetThreadExecutionState($ES_CONTINUOUS)   # devolve o controle do sono ao Windows
     $hotkey.Release()
