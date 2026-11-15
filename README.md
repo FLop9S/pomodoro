@@ -12,6 +12,20 @@ Timer Pomodoro discreto para Windows, que fica encaixado na barra de tarefas (ao
 
 A linha colorida indica a fase: vermelho = foco, verde = pausa, azul = pausa longa (a cada 4 focos). Números em cinza = pausado. Ao fim de cada fase toca um alarme (três notas, duas vezes) e aparece uma notificação do Windows; o timer fica pausado na próxima fase até ser iniciado de novo (atalho, clique duplo, ícone da bandeja ou clique na notificação).
 
+### Pet do foco (Pomo)
+
+Um tomatinho ao lado do contador que mostra a fase só pelo jeito dele. A cor do corpo é a mesma da linha da fase:
+
+| O Pomo está... | Fase |
+|---|---|
+| vermelho, de sobrancelha franzida, digitando num notebook | Foco rodando |
+| verde, pulando com olhinhos felizes (^ ^) | Pausa rodando |
+| azul, dormindo e soltando "z" | Pausa longa rodando |
+| desbotado, parado, piscando e olhando em volta | Timer pausado |
+| pulando, de olhos arregalados, com um "!" piscando | A fase acabou e a próxima está esperando você iniciar |
+
+Passe o mouse sobre ele para ver a fase por escrito; clique duplo nele inicia/pausa, como no contador. Desliga em **Mostrar pet (Pomo)** no menu. Personagem original, desenhado pelo próprio app.
+
 ### Som de fundo
 
 Toca só durante o foco, com o timer rodando: pausa junto com ele, fica mudo durante o alarme e, nas pausas (curta e longa), tudo fica em silêncio, inclusive o tic-tac. O alarme do fim da pausa continua tocando. Escolha em **Som de fundo** no menu; com o timer pausado, a escolha toca uma amostra de 5 segundos.
@@ -24,6 +38,7 @@ Toca só durante o foco, com o timer rodando: pausa junto com ele, fica mudo dur
 | Chuva | Chuva forte de noite com trovões distantes (um a cada 25 a 50 s): chiado de fundo, chuvisco denso e gotas caindo em poças |
 | Ruído marrom, Mar | Sons gerados pelo próprio app, em loop sem emenda |
 | Claude FM | A rádio lo-fi 24/7 da Anthropic (a mesma do `/radio` do Claude Code). Toca dentro do Pomodoro, com o player oficial do YouTube numa janela escondida; segue o timer e o volume como os outros sons. Leva uns 10 s para conectar e precisa de internet com acesso ao YouTube |
+| Música de estudo (ondas alfa) | O vídeo [Study Music Alpha Waves](https://www.youtube.com/watch?v=WPni755-Krg), do canal Yellow Brick Cinema (3 h, em loop). Usa o mesmo player do Claude FM; ao pausar e retomar, continua de onde parou. Pode ter anúncios do YouTube |
 
 Os sons gerados são criados na primeira vez que são escolhidos (menos de 1 segundo) e ficam em `%APPDATA%\PomodoroOverlay\sons`. O volume do som de fundo fica em **Som de fundo > Volume**. Só as opções do YouTube (Claude FM e Música de estudo) dependem de internet.
 
@@ -38,7 +53,6 @@ Pelo menu dá para:
 - esconder o contador da tela.
 
 Outros comportamentos:
-| Música de estudo (ondas alfa) | O vídeo [Study Music Alpha Waves](https://www.youtube.com/watch?v=WPni755-Krg), do canal Yellow Brick Cinema (3 h, em loop). Usa o mesmo player do Claude FM; ao pausar e retomar, continua de onde parou. Pode ter anúncios do YouTube |
 
 - não aparece no Alt+Tab;
 - some quando há algo em tela cheia (vídeo, apresentação);
