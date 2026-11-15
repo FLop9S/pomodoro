@@ -416,7 +416,7 @@ if (-not $createdNew) { return }
 $cfgDir  = Join-Path $env:APPDATA 'PomodoroOverlay'
 $cfgFile = Join-Path $cfgDir 'config.json'
 $cfg = [ordered]@{ FocusMin = 25; ShortMin = 5; LongMin = 15; X = $null; Y = $null; Visible = $true; Docked = $true; Alarm = $true; TickTock = $true
-                  Ambient = $null; Volume = 35; KeepAwake = $false
+                  Ambient = $null; Volume = 35; KeepAwake = $false; Pet = $true
                   FocusQuiet = $true; QuietApplied = $false; OrigBadges = 1; OrigFlashing = 1; DndByUs = $false }
 if (Test-Path $cfgFile) {
     try {
@@ -455,6 +455,7 @@ $S = @{
     DockedNow = $false; Shown = $false; Tick = 0
     LastSec = -1; MuteUntil = [datetime]::MinValue
     AmbSrc = ''; AmbPlaying = $false; PreviewUntil = [datetime]::MinValue
+    Awaiting = $false; PetKey = ''; PetEpoch = [datetime]::Now   # pet: fase acabou e espera início; dica atual; relógio da animação
     TextOn = [Drawing.Color]::FromArgb(240, 240, 240); TextOff = [Drawing.Color]::FromArgb(140, 140, 148)
 }
 
@@ -503,6 +504,7 @@ function Switch-Timer {
         $S.EndAt = [datetime]::Now + $S.Remaining
         $S.Running = $true
     }
+    $S.Awaiting = $false
     $S.PreviewUntil = [datetime]::MinValue
     Update-Ambient
     Update-View
@@ -512,27 +514,34 @@ function Switch-Timer {
 $Ambients = [ordered]@{
     'Nenhum' = 'Nenhum'; 'TicTac' = 'Tic-tac'
     'Minecraft' = 'Minecraft (savana: vento, pássaros e piano)'; 'Chuva' = 'Chuva'; 'Marrom' = 'Ruído marrom'; 'Mar' = 'Mar'
-    'ClaudeFM' = 'Claude FM (lo-fi)'
+    'ClaudeFM' = 'Claude FM (lo-fi)'; 'AlphaWaves' = 'Música de estudo (ondas alfa)'
 }
 
-# ---------- Claude FM: a rádio lo-fi da Anthropic (live do YouTube, a mesma do /radio do Claude Code) ----------
-# Toca dentro do Pomodoro com o player oficial do YouTube, numa janela WebView2 (motor do Edge,
+# ---------- Sons do YouTube: Claude FM e música de estudo ----------
+# Tocam dentro do Pomodoro com o player oficial do YouTube, numa janela WebView2 (motor do Edge,
 # já instalado no Windows) posicionada fora da tela. As DLLs do WebView2 ficam em lib\.
-# clau.de/radio sempre redireciona para a live atual (o link da live muda quando ela reinicia).
-$ClaudeFmUrl = 'https://clau.de/radio'
+# Claude FM: a rádio lo-fi da Anthropic (live, a mesma do /radio do Claude Code). clau.de/radio sempre
+# redireciona para a live atual (o link da live muda quando ela reinicia).
+# AlphaWaves: "Study Music Alpha Waves" do canal Yellow Brick Cinema (vídeo de 3 h, toca em loop).
+$YouTube = @{
+    'ClaudeFM'   = @{ Name = 'o Claude FM'; Live = $true; Url = 'https://clau.de/radio' }
+    'AlphaWaves' = @{ Name = 'a música de estudo'; Live = $false; Vid = 'WPni755-Krg' }
+}
 $LibDir = Join-Path $PSScriptRoot 'lib'
-$FM = @{ Stage = 0; Form = $null; WV = $null; Task = $null; Env = $null; Sent = ''; Failed = $false }
+$FM = @{ Stage = 0; Source = ''; Form = $null; WV = $null; Task = $null; Env = $null; Sent = ''; Failed = $false }
 # Stage: 0 = parado, 1 = criando ambiente, 2 = criando o navegador, 3 = pronto para comandos
 
-$ClaudeFmPage = @'
+$YouTubePage = @'
 <!doctype html><html><body style="margin:0;background:#000"><div id="p"></div>
 <script>
-var player, ready = false, want = { play: false, vol: 35 }, wasPaused = false;
+var LIVE = __LIVE__, player, ready = false, want = { play: false, vol: 35 }, wasPaused = false;
 var tag = document.createElement('script'); tag.src = 'https://www.youtube.com/iframe_api'; document.head.appendChild(tag);
 function onYouTubeIframeAPIReady() {
   player = new YT.Player('p', { width: 320, height: 180, videoId: '__VID__',
     playerVars: { autoplay: 0, controls: 0, playsinline: 1 },
     events: { onReady: function () { ready = true; apply(); },
+              onStateChange: function (e) {   // vídeo comum: no fim, recomeça (loop)
+                if (e.data === 0 && !LIVE) { player.seekTo(0, true); if (want.play) player.playVideo(); } },
               onError: function (e) { chrome.webview.postMessage('error:' + e.data); } } });
 }
 function apply() {
@@ -541,7 +550,8 @@ function apply() {
   var st = player.getPlayerState();
   if (want.play) {
     if (st !== 1 && st !== 3) {
-      if (wasPaused) { player.seekTo(player.getDuration(), true); wasPaused = false; }   // volta ao "ao vivo"
+      if (wasPaused && LIVE) player.seekTo(player.getDuration(), true);   // live: volta ao "ao vivo"
+      wasPaused = false;                                                   // vídeo comum: continua de onde parou
       player.playVideo();
     }
   } else if (st === 1 || st === 3) { player.pauseVideo(); wasPaused = true; }
@@ -551,33 +561,38 @@ setInterval(apply, 2000);   // insiste até tocar (o player às vezes ignora o p
 </script></body></html>
 '@
 
-function Get-ClaudeFmVideoId {
-    $req = [Net.HttpWebRequest]::Create($ClaudeFmUrl); $req.AllowAutoRedirect = $false; $req.Timeout = 10000
+function Get-YouTubeVideoId([string]$id) {
+    $src = $YouTube[$id]
+    if ($src.Vid) { return $src.Vid }
+    $req = [Net.HttpWebRequest]::Create($src.Url); $req.AllowAutoRedirect = $false; $req.Timeout = 10000
     $resp = $req.GetResponse()
     try { $loc = $resp.Headers['Location'] } finally { $resp.Close() }
     if ($loc -match '[?&]v=([\w-]{11})') { return $Matches[1] }
     throw "link inesperado: $loc"
 }
 
-function Stop-ClaudeFM([string]$why) {
+function Stop-YouTube([string]$why) {
+    $name = if ($FM.Source) { $YouTube[$FM.Source].Name } else { 'o som' }
     if ($FM.Form) { try { $FM.Form.Dispose() } catch {} }
-    $FM.Stage = 0; $FM.Form = $null; $FM.WV = $null; $FM.Task = $null; $FM.Sent = ''
+    $FM.Stage = 0; $FM.Source = ''; $FM.Form = $null; $FM.WV = $null; $FM.Task = $null; $FM.Sent = ''
     if ($why) {
         $FM.Failed = $true
-        $tray.ShowBalloonTip(8000, 'Pomodoro', "Não consegui tocar o Claude FM: $why. Escolha o Claude FM de novo para tentar outra vez.", [Windows.Forms.ToolTipIcon]::Warning)
+        $tray.ShowBalloonTip(8000, 'Pomodoro', "Não consegui tocar $($name): $why. Escolha de novo no menu para tentar outra vez.", [Windows.Forms.ToolTipIcon]::Warning)
     }
 }
 
-function Start-ClaudeFM {
+function Start-YouTube([string]$id) {
+    $FM.Source = $id
     try {
         Add-Type -Path (Join-Path $LibDir 'Microsoft.Web.WebView2.Core.dll')
         Add-Type -Path (Join-Path $LibDir 'Microsoft.Web.WebView2.WinForms.dll')
-    } catch { Stop-ClaudeFM 'faltam os arquivos do WebView2 na pasta lib'; return }
-    try { $vid = Get-ClaudeFmVideoId } catch { Stop-ClaudeFM 'sem acesso ao link da rádio (internet ou rede bloqueando)'; return }
+    } catch { Stop-YouTube 'faltam os arquivos do WebView2 na pasta lib'; return }
+    try { $vid = Get-YouTubeVideoId $id } catch { Stop-YouTube 'sem acesso ao link da rádio (internet ou rede bloqueando)'; return }
 
-    $site = Join-Path $cfgDir 'claudefm'
+    $site = Join-Path $cfgDir 'youtube'
     New-Item -ItemType Directory -Force $site | Out-Null
-    $ClaudeFmPage.Replace('__VID__', $vid) | Set-Content (Join-Path $site 'index.html') -Encoding UTF8
+    $YouTubePage.Replace('__VID__', $vid).Replace('__LIVE__', $YouTube[$id].Live.ToString().ToLower()) |
+        Set-Content (Join-Path $site 'index.html') -Encoding UTF8
 
     # Janela fora da tela (precisa existir para o player tocar), fora do Alt+Tab
     $f = New-Object Windows.Forms.Form
@@ -600,20 +615,20 @@ function Start-ClaudeFM {
 }
 
 # Avança a criação sem travar a tela (chamado a cada tick)
-function Step-ClaudeFM {
+function Step-YouTube {
     if ($FM.Stage -in 1, 2 -and $FM.Task.IsCompleted) {
-        if ($FM.Task.IsFaulted) { Stop-ClaudeFM 'o WebView2 não abriu'; return }
+        if ($FM.Task.IsFaulted) { Stop-YouTube 'o WebView2 não abriu'; return }
         if ($FM.Stage -eq 1) {
             $FM.Task = $FM.WV.EnsureCoreWebView2Async($FM.Task.Result)
             $FM.Stage = 2
         } else {
             $core = $FM.WV.CoreWebView2
-            $core.SetVirtualHostNameToFolderMapping('pomodoro.local', (Join-Path $cfgDir 'claudefm'),
+            $core.SetVirtualHostNameToFolderMapping('pomodoro.local', (Join-Path $cfgDir 'youtube'),
                 [Microsoft.Web.WebView2.Core.CoreWebView2HostResourceAccessKind]::Allow)
             $core.add_WebMessageReceived({
                 param($sender, $e)
                 $msg = $e.TryGetWebMessageAsString()
-                if ($msg -like 'error:*') { Stop-ClaudeFM "o YouTube recusou a live (código $($msg.Substring(6)))" }
+                if ($msg -like 'error:*') { Stop-YouTube "o YouTube recusou o vídeo (código $($msg.Substring(6)))" }
             })
             $core.Navigate('https://pomodoro.local/index.html')
             $FM.Stage = 3; $FM.Sent = ''
@@ -621,9 +636,12 @@ function Step-ClaudeFM {
     }
 }
 
-function Set-ClaudeFM([bool]$play) {
-    if ($play -and $FM.Stage -eq 0 -and -not $FM.Failed) { Start-ClaudeFM }
-    Step-ClaudeFM
+# $id = fonte do YouTube que deve tocar agora ('' = nenhuma: o player pausa e continua carregado)
+function Set-YouTube([string]$id) {
+    $play = [bool]$id
+    if ($play -and $FM.Stage -ne 0 -and $FM.Source -ne $id) { Stop-YouTube }   # trocou de fonte: recria o player
+    if ($play -and $FM.Stage -eq 0 -and -not $FM.Failed) { Start-YouTube $id }
+    Step-YouTube
     if ($FM.Stage -ne 3) { return }
     $key = "$play|$([int]$cfg.Volume)"
     if ($key -ne $FM.Sent) {
@@ -663,7 +681,7 @@ function Update-Ambient {
     $now = [datetime]::Now
     # Só no foco: nas pausas fica tudo em silêncio (a amostra ao escolher um som toca sempre)
     $active = (($S.Running -and $S.Phase -eq 'Foco') -or $now -lt $S.PreviewUntil) -and $now -ge $S.MuteUntil
-    Set-ClaudeFM ($active -and $id -eq 'ClaudeFM')
+    Set-YouTube $(if ($active -and $YouTube.Contains($id)) { $id } else { '' })
 
     if ($null -eq $wmp) { return }
     $want = $active -and ($GeneratedSounds -contains $id)
@@ -688,9 +706,9 @@ function Set-Ambient([string]$id) {
     $S.AmbPlaying = $false; $S.AmbSrc = ''
     if ($GeneratedSounds -contains $id) { [void](Get-AmbientSource $id) }
     # Pausado: toca uma amostra curta para a pessoa ouvir o que escolheu
-    # (o Claude FM leva uns 5-8 s para conectar, então a amostra dele é maior)
+    # (os sons do YouTube levam uns 5-8 s para conectar, então a amostra deles é maior)
     $FM.Failed = $false
-    if (-not $S.Running) { $S.PreviewUntil = [datetime]::Now.AddSeconds($(if ($id -eq 'ClaudeFM') { 15 } else { 5 })) }
+    if (-not $S.Running) { $S.PreviewUntil = [datetime]::Now.AddSeconds($(if ($YouTube.Contains($id)) { 15 } else { 5 })) }
     Sync-AmbientChecks; Save-Config; Update-Ambient
 }
 
@@ -702,7 +720,7 @@ function Sync-AmbientChecks {
 }
 
 function Reset-Phase {
-    $S.Running = $false
+    $S.Running = $false; $S.Awaiting = $false
     $S.Remaining = Get-PhaseLength $S.Phase
     Update-View
 }
@@ -719,6 +737,7 @@ function Start-NextPhase([bool]$fromTimer) {
     # Fim de fase pelo timer sempre pausa: a próxima só começa quando iniciada manualmente
     $run = if ($fromTimer) { $false } else { $S.Running }
     $S.Running = $run
+    $S.Awaiting = $fromTimer -and -not $run   # o pet chama a atenção até a próxima fase começar
     if ($run) { $S.EndAt = [datetime]::Now + $S.Remaining }
     # Desliga o "Não incomodar" ANTES do aviso de fim de fase, senão o próprio aviso fica escondido
     Update-FocusQuiet
@@ -778,8 +797,165 @@ function Update-View {
     $key = "$($S.Phase)|$($S.Running)|$step"
     if ($key -ne $S.IconKey) { Set-TrayIcon $col ($step / 48) $S.Running; $S.IconKey = $key }
 
+    if ($pet -and $pet.Visible) {   # pet: troca a dica e redesenha na hora quando muda de estado
+        $mode = Get-PetMode
+        $pk = "$mode|$($S.Phase)"
+        if ($pk -ne $S.PetKey) { $tip.SetToolTip($pet, (Get-PetTip $mode)); $S.PetKey = $pk; $pet.Invalidate() }
+    }
+
     $op = if ($S.DockedNow -or $S.Hover -or [datetime]::Now -lt $S.FlashUntil) { 1.0 } else { $IdleOpacity }
     if ($form.Opacity -ne $op) { $form.Opacity = $op; Set-ToolWindowStyle }
+}
+
+# ---------- Pet do foco: o Pomo, um tomatinho que mostra a fase ----------
+# A cor do corpo é a da fase e cada fase tem um jeito próprio:
+#   foco = concentrado no notebook, digitando · pausa = pulando feliz · pausa longa = dormindo (zzz)
+#   pausado = parado, desbotado, piscando e olhando em volta · fase encerrada = pulando com "!" esperando você
+function Get-PetMode {
+    if ($S.Running) { switch ($S.Phase) { 'Foco' { 'focus' } 'Pausa' { 'break' } default { 'long' } } }
+    elseif ($S.Awaiting) { 'awaiting' } else { 'idle' }
+}
+
+function Get-PetTip([string]$mode) {
+    switch ($mode) {
+        'focus'    { 'Foco: o Pomo está concentrado, trabalhando junto com você' }
+        'break'    { 'Pausa: o Pomo está relaxando. Levante, alongue, beba água' }
+        'long'     { 'Pausa longa: o Pomo está tirando uma soneca' }
+        'awaiting' { "Fase encerrada! Próxima: $($S.Phase). Clique duplo para começar" }
+        default    { "$($S.Phase) pausado: o Pomo está esperando. Clique duplo para continuar" }
+    }
+}
+
+# Desenha num espaço de 100x100 unidades, centralizado em $w x $h. $t = segundos (animação),
+# $flash = acabou de mudar de fase, $ink = cor de texto (para os "z" e o "!" contrastarem com o fundo)
+function Draw-Pet([Drawing.Graphics]$g, [int]$w, [int]$h, [string]$mode, [Drawing.Color]$col, [Drawing.Color]$ink, [double]$t, [bool]$flash) {
+    $g.SmoothingMode = [Drawing.Drawing2D.SmoothingMode]::AntiAlias
+    # Usa só a área com desenho (x 8..100, y 12..98) para o pet ficar o maior possível
+    $s = [math]::Min($w / 92.0, $h / 86.0)
+    $g.TranslateTransform(($w - 92 * $s) / 2 - 8 * $s, ($h - 86 * $s) / 2 - 12 * $s)
+    $g.ScaleTransform($s, $s)
+
+    # Movimento do corpo: deslocamento vertical (dy) e "amassado" (sx/sy)
+    $dy = 0.0; $sx = 1.0; $sy = 1.0
+    switch ($mode) {
+        'focus' { if ([int]($t * 5) % 2) { $dy = 1.5 } }   # balança no ritmo da digitação
+        'break' { $b = [math]::Abs([math]::Sin($t * 3)); $dy = -$b * 8; $sy = 0.94 + 0.06 * $b; $sx = 1.05 - 0.05 * $b }
+        'long'  { $br = [math]::Sin($t * 1.3); $sy = 1 + 0.04 * $br; $sx = 1 - 0.02 * $br }   # respiração lenta
+        'awaiting' {
+            $hop = if ($flash) { [math]::Abs([math]::Sin($t * 6)) }
+                   else { $p = $t % 3; if ($p -lt 0.5) { [math]::Sin($p / 0.5 * [math]::PI) } else { 0 } }   # um pulinho a cada 3 s
+            $dy = -$hop * 10
+        }
+    }
+    $bw = 68 * $sx; $bh = 60 * $sy
+    $bx = 50 - $bw / 2; $by = 90 - $bh + $dy
+    $cy = $by + $bh / 2
+
+    $body = $col
+    if ($mode -eq 'idle') {   # pausado: corpo desbotado
+        $gray = [int](($col.R + $col.G + $col.B) / 3)
+        $body = [Drawing.Color]::FromArgb(
+            [int]($col.R * 0.45 + $gray * 0.55), [int]($col.G * 0.45 + $gray * 0.55), [int]($col.B * 0.45 + $gray * 0.55))
+    }
+    $dark = [Drawing.Color]::FromArgb([int]($body.R * 0.55), [int]($body.G * 0.55), [int]($body.B * 0.55))
+    $eye = [Drawing.Color]::FromArgb(35, 30, 38)
+
+    $brBody = New-Object Drawing.SolidBrush($body)
+    $pnOut  = New-Object Drawing.Pen($dark, 3)
+    $brEye  = New-Object Drawing.SolidBrush($eye)
+    $pnEye  = New-Object Drawing.Pen($eye, 3.5)
+    $pnEye.StartCap = $pnEye.EndCap = [Drawing.Drawing2D.LineCap]::Round
+    $brInk  = New-Object Drawing.SolidBrush($ink)
+    $pnInk  = New-Object Drawing.Pen($ink, 3.5)
+    $pnInk.StartCap = $pnInk.EndCap = [Drawing.Drawing2D.LineCap]::Round
+    $pnInk.LineJoin = [Drawing.Drawing2D.LineJoin]::Round
+    try {
+        # Sombra no chão (diminui quando ele pula)
+        $sh = 1 + $dy / 25
+        $brSh = New-Object Drawing.SolidBrush([Drawing.Color]::FromArgb(55, 0, 0, 0))
+        $g.FillEllipse($brSh, [single](50 - 24 * $sh), 90, [single](48 * $sh), 6); $brSh.Dispose()
+
+        # Corpo, brilho e o cabinho de folhas
+        $g.FillEllipse($brBody, [single]$bx, [single]$by, [single]$bw, [single]$bh)
+        $g.DrawEllipse($pnOut, [single]$bx, [single]$by, [single]$bw, [single]$bh)
+        $brHi = New-Object Drawing.SolidBrush([Drawing.Color]::FromArgb(90, 255, 255, 255))
+        $g.FillEllipse($brHi, [single]($bx + $bw * 0.16), [single]($by + $bh * 0.14), [single]($bw * 0.2), [single]($bh * 0.16)); $brHi.Dispose()
+        $brLeaf = New-Object Drawing.SolidBrush([Drawing.Color]::FromArgb(56, 142, 60))
+        $pnLeaf = New-Object Drawing.Pen([Drawing.Color]::FromArgb(27, 94, 32), 2)
+        foreach ($lx in @(37, 51)) {
+            $g.FillEllipse($brLeaf, [single]$lx, [single]($by - 5), 12, 8)
+            $g.DrawEllipse($pnLeaf, [single]$lx, [single]($by - 5), 12, 8)
+        }
+        $pnLeaf.Width = 3; $g.DrawLine($pnLeaf, 50, [single]($by + 1), 51, [single]($by - 9))
+        $brLeaf.Dispose(); $pnLeaf.Dispose()
+
+        $ex1 = 50 - 11 * $sx; $ex2 = 50 + 11 * $sx; $ey = $cy - 4
+        switch ($mode) {
+            'focus' {
+                # Olhos para baixo, sobrancelhas franzidas e um notebook na frente
+                foreach ($ex in @($ex1, $ex2)) { $g.FillEllipse($brEye, [single]($ex - 4), [single]($ey - 1), 8, 8) }
+                $g.DrawLine($pnEye, [single]($ex1 - 6), [single]($ey - 9), [single]($ex1 + 4), [single]($ey - 7))
+                $g.DrawLine($pnEye, [single]($ex2 + 6), [single]($ey - 9), [single]($ex2 - 4), [single]($ey - 7))
+                $brLap = New-Object Drawing.SolidBrush([Drawing.Color]::FromArgb(78, 82, 92))
+                $pnLap = New-Object Drawing.Pen([Drawing.Color]::FromArgb(40, 42, 48), 2.5)
+                $g.FillRectangle($brLap, 28, [single]($cy + 6), 44, 22); $g.DrawRectangle($pnLap, 28, [single]($cy + 6), 44, 22)
+                $brLogo = New-Object Drawing.SolidBrush([Drawing.Color]::FromArgb(170, 210, 255))
+                $g.FillEllipse($brLogo, 46, [single]($cy + 14), 8, 6)
+                $brLap.Dispose(); $pnLap.Dispose(); $brLogo.Dispose()
+                # Mãozinhas digitando, alternadas
+                $up = [int]($t * 5) % 2
+                $g.FillEllipse($brBody, 30, [single]($cy + 1 + 3 * $up), 10, 9);  $g.DrawEllipse($pnOut, 30, [single]($cy + 1 + 3 * $up), 10, 9)
+                $g.FillEllipse($brBody, 60, [single]($cy + 4 - 3 * $up), 10, 9);  $g.DrawEllipse($pnOut, 60, [single]($cy + 4 - 3 * $up), 10, 9)
+            }
+            'break' {
+                # Olhos fechados de alegria (^ ^), bochechas e sorriso
+                foreach ($ex in @($ex1, $ex2)) { $g.DrawArc($pnEye, [single]($ex - 5), [single]($ey - 3), 10, 9, 180, 180) }
+                $brCh = New-Object Drawing.SolidBrush([Drawing.Color]::FromArgb(110, 255, 140, 160))
+                $g.FillEllipse($brCh, [single]($ex1 - 9), [single]($ey + 5), 9, 6); $g.FillEllipse($brCh, [single]($ex2), [single]($ey + 5), 9, 6); $brCh.Dispose()
+                $g.DrawArc($pnEye, 43, [single]($ey + 3), 14, 10, 0, 180)
+            }
+            'long' {
+                # Dormindo: olhos fechados, boquinha e "z" subindo
+                foreach ($ex in @($ex1, $ex2)) { $g.DrawArc($pnEye, [single]($ex - 5), [single]($ey - 2), 10, 7, 0, 180) }
+                $g.FillEllipse($brEye, 47, [single]($ey + 9), 6, [single](4 + 2 * [math]::Max(0, [math]::Sin($t * 1.3))))
+                for ($i = 0; $i -lt 2; $i++) {
+                    $p = (($t * 0.45) + $i * 0.5) % 1
+                    $zs = 7 + 7 * $p; $zx = 76 + 10 * $p; $zy = 30 - 26 * $p
+                    $pnZ = New-Object Drawing.Pen([Drawing.Color]::FromArgb([int](255 * (1 - $p)), $ink), 3)
+                    $pnZ.LineJoin = [Drawing.Drawing2D.LineJoin]::Round
+                    $g.DrawLines($pnZ, [Drawing.PointF[]]@(
+                        (New-Object Drawing.PointF($zx, $zy)), (New-Object Drawing.PointF(($zx + $zs), $zy)),
+                        (New-Object Drawing.PointF($zx, ($zy + $zs))), (New-Object Drawing.PointF(($zx + $zs), ($zy + $zs)))))
+                    $pnZ.Dispose()
+                }
+            }
+            'awaiting' {
+                # Olhos arregalados, boca aberta e um "!" chamando
+                foreach ($ex in @($ex1, $ex2)) {
+                    $g.FillEllipse($brEye, [single]($ex - 5), [single]($ey - 4), 10, 11)
+                    $g.FillEllipse([Drawing.Brushes]::White, [single]($ex - 2), [single]($ey - 2), 4, 4)
+                }
+                $g.FillEllipse($brEye, 45, [single]($ey + 9), 10, 9)
+                if ($flash -or ([int]($t * 2) % 2) -eq 0) {   # depois da comemoração, o "!" pisca
+                    $g.FillRectangle($brInk, 89, 8, 7, 18)
+                    $g.FillEllipse($brInk, 89, 30, 7, 7)
+                }
+            }
+            default {
+                # Parado: olhos que piscam e olham em volta
+                $look = [math]::Round([math]::Sin($t * 0.8) * 2) * 1.5
+                if (($t % 3.7) -lt 0.15) {
+                    foreach ($ex in @($ex1, $ex2)) { $g.DrawLine($pnEye, [single]($ex - 4), [single]($ey + 3), [single]($ex + 4), [single]($ey + 3)) }
+                } else {
+                    foreach ($ex in @($ex1, $ex2)) { $g.FillEllipse($brEye, [single]($ex - 4 + $look), [single]($ey - 1), 8, 9) }
+                }
+                $g.DrawLine($pnEye, 45, [single]($ey + 12), 55, [single]($ey + 12))
+            }
+        }
+    } finally {
+        $brBody.Dispose(); $pnOut.Dispose(); $brEye.Dispose(); $pnEye.Dispose(); $brInk.Dispose(); $pnInk.Dispose()
+        $g.ResetTransform()
+    }
 }
 
 # ---------- Modo "na barra de tarefas" ----------
@@ -819,6 +995,7 @@ function Update-Dock {
     $h = $tbH - (Px 8)
     $sample = if (([int]$cfg.FocusMin, [int]$cfg.ShortMin, [int]$cfg.LongMin | Measure-Object -Maximum).Maximum -ge 100) { '000:00' } else { '00:00' }
     $w = [Windows.Forms.TextRenderer]::MeasureText($sample, $FontDocked).Width + $form.Padding.Horizontal + (Px 4)
+    if ($pet.Visible) { $w += $pet.Width }
     $size = New-Object Drawing.Size($w, $h)
     if ($form.ClientSize -ne $size) { $form.ClientSize = $size }
     $loc = New-Object Drawing.Point(($tbi.NotifyLeft - $w - (Px 2)), ($tbi.Top + [int](($tbH - $h) / 2)))
@@ -836,6 +1013,7 @@ function Update-Dock {
 function Set-Layout {
     $S.DockedNow = $miDock.Checked -and ($null -ne (Get-TaskbarInfo))
     $form.SuspendLayout()
+    $pet.Visible = [bool]$cfg.Pet; $pet.Width = Px 32
     if ($S.DockedNow) {
         $form.Padding = New-Object Windows.Forms.Padding((Px 12), 0, (Px 12), (Px 3))
         $bar.Dock = 'Bottom'; $bar.Height = Px 3
@@ -846,7 +1024,7 @@ function Set-Layout {
         $form.Padding = New-Object Windows.Forms.Padding(0)
         $bar.Dock = 'Left'; $bar.Width = Px 5
         $lbl.Font = $FontFloat
-        $form.ClientSize = New-Object Drawing.Size((Px 92), (Px 32))
+        $form.ClientSize = New-Object Drawing.Size(((Px 92) + $(if ($pet.Visible) { $pet.Width } else { 0 })), (Px 32))
         $form.BackColor = [Drawing.Color]::FromArgb(28, 28, 32)
         $S.TextOn = [Drawing.Color]::FromArgb(240, 240, 240); $S.TextOff = [Drawing.Color]::FromArgb(140, 140, 148)
         $form.Location = $S.FloatPos
@@ -1009,6 +1187,11 @@ $miShow = $menu.Items.Add('Mostrar contador na tela')
 $miShow.CheckOnClick = $true; $miShow.Checked = [bool]$cfg.Visible
 $miShow.add_Click({ Update-Visibility; Save-Config })
 
+$miPet = $menu.Items.Add('Mostrar pet (Pomo)')
+$miPet.CheckOnClick = $true; $miPet.Checked = [bool]$cfg.Pet
+$miPet.ToolTipText = 'Um tomatinho ao lado do contador: concentrado no foco, pulando na pausa, dormindo na pausa longa'
+$miPet.add_Click({ $cfg.Pet = $miPet.Checked; $S.PetKey = ''; Set-Layout; Save-Config })
+
 $miDock = $menu.Items.Add('Fixar na barra de tarefas')
 $miDock.CheckOnClick = $true; $miDock.Checked = [bool]$cfg.Docked
 $miDock.add_Click({ Set-Layout; Save-Config })
@@ -1133,9 +1316,9 @@ Add-Sep
 $miExit = $menu.Items.Add('Sair')
 $miExit.add_Click({
     Save-Config
-    $timer.Stop(); $tickTimer.Stop()
+    $timer.Stop(); $tickTimer.Stop(); $petTimer.Stop()
     if ($null -ne $wmp) { $wmp.controls.stop() }
-    Stop-ClaudeFM
+    Stop-YouTube
     Set-FocusQuiet $false   # devolve contadores e piscar da barra
     [void][PomoNative]::SetThreadExecutionState($ES_CONTINUOUS)   # devolve o controle do sono ao Windows
     $hotkey.Release()
@@ -1182,7 +1365,22 @@ $lbl.Font = $FontFloat
 $bar = New-Object Windows.Forms.Panel
 $bar.Dock = 'Left'
 $bar.Width = Px 5
+# Pet à esquerda do contador (PictureBox já desenha sem piscar). Ordem importa: o último
+# adicionado encaixa primeiro, então fica barra (borda) > pet (esquerda) > contador (resto)
+$pet = New-Object Windows.Forms.PictureBox
+$pet.Dock = 'Left'
+$pet.Width = Px 32
+$pet.add_Paint({
+    param($sender, $e)
+    try {   # um erro de desenho não pode derrubar o Pomodoro
+        $e.Graphics.Clear($form.BackColor)
+        $ink = if ($S.DockedNow) { $S.TextOn } else { [Drawing.Color]::FromArgb(240, 240, 240) }
+        Draw-Pet $e.Graphics $sender.ClientSize.Width $sender.ClientSize.Height (Get-PetMode) $Colors[$S.Phase] $ink `
+            ([datetime]::Now - $S.PetEpoch).TotalSeconds ([datetime]::Now -lt $S.FlashUntil)
+    } catch {}
+})
 $form.Controls.Add($lbl)
+$form.Controls.Add($pet)
 $form.Controls.Add($bar)
 
 $tip = New-Object Windows.Forms.ToolTip
@@ -1197,12 +1395,13 @@ $onMove  = { param($sender, $e)
 $onUp    = { if ($null -ne $S.Drag) { $S.Drag = $null; $S.FloatPos = $form.Location; Save-Config } }
 $onEnter = { $S.Hover = $true; $form.Opacity = 1.0 }
 $onLeave = { $S.Hover = $false; Update-View }
-foreach ($c in @($lbl, $bar)) {
+foreach ($c in @($lbl, $bar, $pet)) {
     $c.add_MouseDown($onDown); $c.add_MouseMove($onMove); $c.add_MouseUp($onUp)
     $c.add_MouseEnter($onEnter); $c.add_MouseLeave($onLeave)
     $c.ContextMenuStrip = $menu
 }
 $lbl.add_DoubleClick({ Switch-Timer })
+$pet.add_DoubleClick({ Switch-Timer })
 
 # Posição: a salva (se ainda estiver em alguma tela) ou canto inferior direito
 $wa = [Windows.Forms.Screen]::PrimaryScreen.WorkingArea
@@ -1253,12 +1452,18 @@ $tickTimer = New-Object Windows.Forms.Timer
 $tickTimer.Interval = 50
 $tickTimer.add_Tick({ Invoke-TickTock })
 
+# Animação do pet (~8 quadros/s), só enquanto ele está na tela
+$petTimer = New-Object Windows.Forms.Timer
+$petTimer.Interval = 125
+$petTimer.add_Tick({ if ($S.Shown -and $pet.Visible) { $pet.Invalidate() } })
+
 Set-KeepAwake ([bool]$cfg.KeepAwake)
 if ($cfg.QuietApplied -or $cfg.DndByUs) { Set-FocusQuiet $false }   # o Pomodoro foi fechado à força no meio de um foco
 $form.Show(); $S.Shown = $true
 Update-Visibility
 $timer.Start()
 $tickTimer.Start()
+$petTimer.Start()
 
 $ctx = New-Object Windows.Forms.ApplicationContext
 [Windows.Forms.Application]::Run($ctx)
